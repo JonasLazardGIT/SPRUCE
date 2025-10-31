@@ -1,0 +1,4 @@
+./bench_cembed_test.go
+./bench_linop_test.go
+./bench_ntrusolve_test.go
+./bench_ntt_test.go

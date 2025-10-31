@@ -1,0 +1,4 @@
+./canvas.go
+./doc.go
+./text.go
+./text_plain.go

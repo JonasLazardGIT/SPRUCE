@@ -1,0 +1,4 @@
+./decs_prover.go
+./decs_types.go
+./decs_verifier.go
+./merkle.go

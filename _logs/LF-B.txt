@@ -1,0 +1,37 @@
+B0Const[0:4]=[920014 318342 480132 300366]
+B0Msg[0][0][0:4]=[337841 976101 928906 921732]
+B0Rnd[0][0][0:4]=[474508 60204 897786 668336]
+b1[0:4]=[321529 307529 834533 954719]
+[sig.B_file] B0Const[0:4]=[920014 318342 480132 300366]
+[sig.B_file] B0Msg[0][0][0:4]=[337841 976101 928906 921732]
+[sig.B_file] B0Rnd[0][0][0:4]=[474508 60204 897786 668336]
+[sig.B_file] b1[0:4]=[321529 307529 834533 954719]
+m[0:8]=[32867 117282 616477 536925 972484 611063 742592 574328]
+x0[0:8]=[548754 274500 97595 1035255 137198 51691 299417 672788]
+x1[0:8]=[482331 534493 222848 870216 162798 439560 881271 459127]
+s2[0:8]=[2411 2224 2382 701 1038151 206 1038046 1038009]
+s1[0:8]=[656 1036758 668 1036470 397 1037514 945 215]
+As[0:8]=[603498 835562 786718 275291 968274 941126 16546 701082]
+c1NTT[0:8]=[603498 835562 786718 275291 968274 941126 16546 701082]
+As - c1[0:8]=[0 0 0 0 0 0 0 0]
+→ parallel rows: 13; aggregated rows: 1; witness cols: 10
+[proof-size] Breakdown (bytes and percent of total):
+[proof-size] RowOpening           7689  ( 46.0%)
+[proof-size] MOpening             4370  ( 26.2%)
+[proof-size] MR                   2016  ( 12.1%)
+[proof-size] BarSets              1664  ( 10.0%)
+[proof-size] VTargets              512  (  3.1%)
+[proof-size] Digests               256  (  1.5%)
+[proof-size] TailIndices           104  (  0.6%)
+[proof-size] Ctr                    32  (  0.2%)
+[proof-size] Salt                   32  (  0.2%)
+[proof-size] Root                   16  (  0.1%)
+[proof-size] Zeta                    0  (  0.0%)
+[proof-size] Chi                     0  (  0.0%)
+[proof-size] TOTAL               16707  (100.0%)
+[soundness] eps1≤2^{-135.03}, eps2≤2^{-119.92}, eps3≤2^{-118.85}, eps4≤2^{-149.13}, eps_fs≤{2^{-128.00},2^{-120.00},2^{-120.00},2^{-128.00}}, total≈2^{-117.60}
+[size] nrows=9, m=8, dQ=35
+PACS checks: OkLin=true OkEq4=true OkSum=true
+Proof size (estimate): 16707 bytes
+Soundness bits: eps1=135.03 eps2=119.92 eps3=118.85 eps4=149.13 total=117.60 (≈3.975e-36)
+Size metrics: nrows=9 m=8 dQ=35

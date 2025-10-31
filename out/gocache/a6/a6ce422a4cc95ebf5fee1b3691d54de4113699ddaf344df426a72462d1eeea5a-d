@@ -1,0 +1,8 @@
+./align.go
+./axis.go
+./doc.go
+./labelling.go
+./legend.go
+./plot.go
+./version.go
+./vgall.go

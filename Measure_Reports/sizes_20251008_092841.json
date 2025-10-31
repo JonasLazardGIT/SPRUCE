@@ -1,0 +1,55 @@
+{
+  "timestamp": "20251008_092841",
+  "entries": [
+    {
+      "key": "ntru/signature/expected_packed_total",
+      "bytes": 4096,
+      "human": "4.0 KiB"
+    },
+    {
+      "key": "ntru/signature/h_actual",
+      "bytes": 8192,
+      "human": "8.0 KiB"
+    },
+    {
+      "key": "ntru/signature/json_file",
+      "bytes": 69461,
+      "human": "67.8 KiB"
+    },
+    {
+      "key": "ntru/signature/s0_actual",
+      "bytes": 8192,
+      "human": "8.0 KiB"
+    },
+    {
+      "key": "ntru/signature/s1_actual",
+      "bytes": 8192,
+      "human": "8.0 KiB"
+    },
+    {
+      "key": "ntru/signature/s1_expected_packed",
+      "bytes": 2048,
+      "human": "2.0 KiB"
+    },
+    {
+      "key": "ntru/signature/s2_actual",
+      "bytes": 8192,
+      "human": "8.0 KiB"
+    },
+    {
+      "key": "ntru/signature/s2_expected_packed",
+      "bytes": 2048,
+      "human": "2.0 KiB"
+    },
+    {
+      "key": "ntru/signature/seeds",
+      "bytes": 96,
+      "human": "96 B"
+    },
+    {
+      "key": "ntru/signature/t_actual",
+      "bytes": 8192,
+      "human": "8.0 KiB"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+./latex.go
+./macros.go
+./parser.go
+./scanner.go

@@ -1,0 +1,74 @@
+vSIS Signature – Parameter Reference (for tuning)
+
+This file documents the parameters that control the end-to-end protocol and where they are defined or derived in the codebase. Use it as a checklist when sweeping configurations or reproducing results.
+
+Global system parameters (System/System.go)
+- N: ring degree (power of two). File: System/System.go: line ~22
+  - Used everywhere to size polynomials and the NTT.
+  - Change here, then regenerate parameters via `go run ./cmd`.
+- Q: modulus q (must be prime). File: System/System.go
+  - Many routines assume q is prime (e.g., modular inverses via Fermat).
+  - If you change q, ensure NTT-friendly prime and update A/B matrices.
+- Base (t): gadget base. File: System/System.go
+  - Influences gadget dimension K = ceil(log_t(q)); higher base reduces K.
+- K: gadget length. File: System/System.go (computed)
+  - Derived from Base and Q; persisted into params and keys.
+- SigmaT: Gaussian width σ_t. File: System/System.go (from Preimage_Sampler.CalculateParams)
+- Sigma: smoothing parameter σ = σ_t/(t+1). File: System/System.go
+- Bound: spectral/norm bound s. File: System/System.go
+- Beta: public L2 bound β = ceil(Bound). File: System/System.go
+
+Hash parameters (vSIS-HASH)
+- B-matrix: four polynomials sampled uniformly in R_q. File: System/System.go writes Parameters/Bmatrix.json
+  - Used by ComputeBBSHash. Stored and reused across Signing and Verifying.
+  - Note: ComputeBBSHash NTT-lifts m/x0/x1 in place.
+
+Trapdoor / Sampler parameters (Preimage_Sampler)
+- Env toggles (docs/tags_and_options.md documents these):
+  - S_CONST: override spectral-bound constant used by SpectralBound.
+  - SIGMA_CONST: override smoothing parameter constant in CalculateParams.
+  - ALPHA_MODE: set `GEN` to use α=(t+1)σ; otherwise α=2σ in GaussSamp.
+  - CENTER_SYNDROME: `1` to center the syndrome before G-sampling.
+  - RANDOMIZED_ROUNDING: `0` to disable in perturbation sampling.
+- Derived:
+  - K = ceil(log_t(q)) set at TrapGen runtime from Base and q.
+  - CreateGadgetMatrix uses Base and K to build gadget rows.
+
+DECS (small-domain PCS) parameters (DECS/decs_types.go)
+- Params struct (see DefaultParams in decs_types.go):
+  - Eta: number of mask polynomials (η). Default in code; used by Commit/Eval.
+  - Degree: maximum allowed degree for P and M. Must be < N.
+  - NonceBytes: per-leaf nonce length λ (security parameter for Merkle leaves).
+- Implementation notes:
+  - Leaf packing uses uint64 for P/M values and uint32 for the index; both prover and verifier must match.
+
+LVCS parameters (LVCS)
+- r: number of committed rows = witness columns + auxiliaries. Set in the simulation and PCS wrapper.
+- ell (ℓ): number of masked points per row; chosen by caller (simulation)
+  - Controls leak budget and tail size: masked indices lie in [ncols, ncols+ℓ).
+- ncols: size of Ω. In tests set to SimOpts.Ncols; ω points are taken from the NTT grid.
+- Verifier state also stores DECS params (Eta, Degree, NonceBytes).
+
+PIOP (PACS) batching parameters
+- Ω (omega): evaluation set, length s = |Ω|. Chosen in simulation as the first s NTT points.
+- ℓ: blinding points per row (same as LVCS ℓ). Enters SmallWood Eq.(3) via d_Q = max(d·(ℓ′+s−1)+(s−1), d′·(ℓ′+s−1)).
+- ρ (rho): number of masking rows Q_i(X). In tests often 1; increase to reduce soundness error.
+- GammaPrime, gammaPrime: Fiat–Shamir matrices for Eq.(4) aggregation (ρ×|F_par|, ρ×|F_agg|).
+- LinfSpec (PIOP/bound_spec.go):
+  - W = 4, L = 5: window bits and digit count (R = 16) used to split |s_t(ω)| into magnitude/digit rows.
+  - DMax: per-digit ranges (balanced for digit 0, unsigned for higher limbs).
+  - PDi: membership polynomials for each digit; their degrees feed the parallel degree bound.
+  - RPows: precomputed R^i mod q powers used when reconstructing |s_t(ω)| from digits.
+  - MaxAbs: largest magnitude representable by the chosen gadget parameters.
+
+Tuning guidance
+- Security level and performance tradeoffs:
+  - Increase N and choose a larger NTT-friendly prime q to reduce collisions and improve soundness; increases runtime and memory.
+  - Base t: larger base reduces K (fewer gadget polys) but changes sampler constants.
+  - ℓ: increasing ℓ grows the masked tail and commitment size; strengthens LVCS linear-map binding with more openings.
+  - ρ: increases number of Q rows; strengthens PACS Eq.(4) binding at linear cost.
+  - Degree: must exceed maximal row polynomial degree (s+ℓ−1) but be < N.
+- Practical checklist after any change:
+  - Regenerate Parameters/Parameters.json and Parameters/Bmatrix.json.
+  - Rebuild keypair (public/private key JSON) or ensure compatibility.
+  - Run `go test ./...` to exercise DECS/LVCS/PIOP tests.

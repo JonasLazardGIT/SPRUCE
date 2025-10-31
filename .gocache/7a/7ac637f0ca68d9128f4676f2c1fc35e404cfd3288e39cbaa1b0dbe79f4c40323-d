@@ -1,0 +1,5 @@
+./Interpolate.go
+./lvcs_prover.go
+./lvcs_verifier.go
+./mod64.go
+./lvcs_test.go
