@@ -14,3 +14,11 @@ func TestSimOptsCredentialFlag(t *testing.T) {
 		t.Fatalf("credential flag lost after ApplyDefaults")
 	}
 }
+
+// Ensure credential path returns a clear error for now.
+func TestRunOnceCredentialStub(t *testing.T) {
+	_, err := PIOP.RunOnce(PIOP.SimOpts{Credential: true})
+	if err == nil {
+		t.Fatalf("expected error for credential mode")
+	}
+}

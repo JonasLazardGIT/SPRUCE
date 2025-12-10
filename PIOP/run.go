@@ -641,6 +641,14 @@ type ProofSnapshot struct {
 // RunOnce executes a single serialized PACS simulation and captures metrics.
 func RunOnce(o SimOpts) (SimReport, error) {
 	o.applyDefaults()
+	if o.Credential {
+		return runCredential(o)
+	}
+	return runPACS(o)
+}
+
+// runPACS preserves the existing behaviour for non-credential simulations.
+func runPACS(o SimOpts) (SimReport, error) {
 	runtime.GC()
 	var ms0, ms1 runtime.MemStats
 	runtime.ReadMemStats(&ms0)
