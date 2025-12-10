@@ -241,6 +241,10 @@ type SimOpts struct {
 
 	// Mutate allows tests to tweak the witness (w1,w2,w3) before constraints.
 	Mutate func(r *ring.Ring, omega []uint64, ell int, w1 []*ring.Poly, w2 *ring.Poly, w3 []*ring.Poly) `json:"-"`
+
+	// Credential switches on the augmented credential statement (commit/center/sig)
+	// once it is wired. Currently not implemented; kept for future integration.
+	Credential bool
 }
 
 func defaultSimOpts() SimOpts {
@@ -300,7 +304,11 @@ func (o *SimOpts) applyDefaults() {
 	if o.ChainL < 0 {
 		o.ChainL = 0
 	}
+	// Credential flag defaults to false; leave as provided.
 }
+
+// ApplyDefaultsExported exposes applyDefaults to external callers (tests).
+func (o *SimOpts) ApplyDefaultsExported() { o.applyDefaults() }
 
 // RowLayout captures the witness row partition so verifiers can recover per-row values.
 type RowLayout struct {

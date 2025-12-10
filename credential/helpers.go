@@ -3,14 +3,12 @@ package credential
 import (
 	"fmt"
 
-	ntrurio "vSIS-Signature/ntru/io"
 	vsishash "vSIS-Signature/vSIS-HASH"
 
 	"github.com/tuneinsight/lattigo/v4/ring"
 )
 
-// CenterBounded wraps v back into [-B, B] using modular arithmetic with modulus
-// 2B+1. It assumes B > 0.
+// CenterBounded wraps v into [-bound, bound] using modulus 2*bound+1.
 func CenterBounded(v, bound int64) int64 {
 	mod := 2*bound + 1
 	w := (v + bound) % mod
@@ -20,8 +18,7 @@ func CenterBounded(v, bound int64) int64 {
 	return w - bound
 }
 
-// CombineRandomness computes center(rU + rI) component-wise with the provided
-// bound. The output is guaranteed to lie in [-bound, bound].
+// CombineRandomness computes center(rUser + rIssuer) component-wise.
 func CombineRandomness(rUser, rIssuer []int64, bound int64) ([]int64, error) {
 	if bound <= 0 {
 		return nil, fmt.Errorf("bound must be > 0")
@@ -36,11 +33,9 @@ func CombineRandomness(rUser, rIssuer []int64, bound int64) ([]int64, error) {
 	return out, nil
 }
 
-// HashMessage builds t = h_{m,(r0,r1)}(B) using explicit polynomials for the
-// message and randomness, mirroring BuildWitnessFromDisk but without seeds.
-// All inputs are expected in coefficient domain; B must be in NTT form.
-// The returned coefficients are centered in [-q/2, q/2] and can be fed
-// directly to the sampler.
+// HashMessage computes t = h_{m,(r0,r1)}(B) from explicit polynomials.
+// Inputs m1, m2, r0, r1 are expected in coefficient domain; B in NTT.
+// The output coefficients are centered in [-q/2, q/2].
 func HashMessage(
 	ringQ *ring.Ring,
 	B []*ring.Poly,
@@ -56,17 +51,14 @@ func HashMessage(
 		return nil, fmt.Errorf("nil input polynomial")
 	}
 
-	// Combine m1 || m2 into a single polynomial placeholder via coefficient-wise
-	// addition; callers can swap this aggregator when a concrete encoding is set.
-	mCombined := ringQ.NewPoly()
-	ring.Copy(m1, mCombined)
-	ringQ.Add(mCombined, m2, mCombined)
-
 	clone := func(p *ring.Poly) *ring.Poly {
 		cp := ringQ.NewPoly()
 		ring.Copy(p, cp)
 		return cp
 	}
+
+	mCombined := clone(m1)
+	ringQ.Add(mCombined, m2, mCombined)
 
 	mPoly := clone(mCombined)
 	x0 := clone(r0)
@@ -90,18 +82,4 @@ func HashMessage(
 		out[i] = v
 	}
 	return out, nil
-}
-
-// LoadDefaultRing loads the Parameters.json ring for helpers that need it
-// without duplicating boilerplate in callers.
-func LoadDefaultRing() (*ring.Ring, error) {
-	par, err := ntrurio.LoadParams("Parameters/Parameters.json", true)
-	if err != nil {
-		if parUp, errUp := ntrurio.LoadParams("../Parameters/Parameters.json", true); errUp == nil {
-			par = parUp
-		} else {
-			return nil, err
-		}
-	}
-	return ring.NewRing(par.N, []uint64{par.Q})
 }
