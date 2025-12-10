@@ -114,6 +114,10 @@ Verification mirrors signing but treats the signature as input:
 
 Any mismatch yields an explicit error indicating the failing step (target mismatch, congruence failure, or norm check failure).
 
+### Explicit-target signing (`SignTarget`)
+
+`SignTarget(tCoeffs, maxTrials, opts)` exposes the same Hybrid‑B sampler but bypasses seed generation: it accepts a centered target vector `t` directly, samples `(s₀, s₁)`, derives `s₂`, and returns an in-memory `Signature` (not persisted unless the caller saves it). Verification falls back to `tCoeffs` when seeds are absent, enabling credential issuance flows that compute `t` externally.
+
 ---
 
 ## I/O, Keys, and Fixtures (`ntru/io`, `ntru/keys`)

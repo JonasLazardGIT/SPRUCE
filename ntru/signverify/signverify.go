@@ -4,6 +4,7 @@ import (
 	crand "crypto/rand"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"math/big"
 
 	measure "vSIS-Signature/measure"
@@ -31,6 +32,9 @@ func loadParams() (*ntrurio.SystemParams, error) {
 	} else {
 		if p2, err2 := ntrurio.LoadParams("../Parameters/Parameters.json", true); err2 == nil {
 			return &p2, nil
+		}
+		if p3, err3 := ntrurio.LoadParams("../../Parameters/Parameters.json", true); err3 == nil {
+			return &p3, nil
 		}
 		return nil, err
 	}
@@ -122,24 +126,24 @@ func Sign(message []byte, maxTrials int) (*keys.Signature, error) {
 	return SignWithOpts(message, maxTrials, defaultOpts)
 }
 
+type targetMeta struct {
+	BFile   string
+	MSeed   []byte
+	X0Seed  []byte
+	X1Seed  []byte
+	Persist bool
+}
+
+// SignTarget signs an explicit target polynomial t (centered coefficients) and
+// returns a signature bundle. It bypasses seed generation and does not persist
+// the result to disk.
+func SignTarget(tCoeffs []int64, maxTrials int, opts ntru.SamplerOpts) (*keys.Signature, error) {
+	meta := targetMeta{Persist: false}
+	return signWithTCoeffs(tCoeffs, maxTrials, opts, meta)
+}
+
 // SignWithOpts mirrors Sign but allows callers to override sampler options.
 func SignWithOpts(message []byte, maxTrials int, opts ntru.SamplerOpts) (*keys.Signature, error) {
-	pk, err := keys.LoadPublic()
-	if err != nil {
-		return nil, err
-	}
-	sk, err := keys.LoadPrivate()
-	if err != nil {
-		return nil, err
-	}
-	Q := new(big.Int)
-	if _, ok := Q.SetString(pk.Q, 16); !ok {
-		return nil, errors.New("invalid Q")
-	}
-	par, err := ntru.NewParams(pk.N, Q)
-	if err != nil {
-		return nil, err
-	}
 	// Load system params for hashing the target
 	sys, err := loadParams()
 	if err != nil {
@@ -161,7 +165,36 @@ func SignWithOpts(message []byte, maxTrials int, opts ntru.SamplerOpts) (*keys.S
 	if err != nil {
 		return nil, err
 	}
-	// Hybrid‑B sampler producing (s0,s1)
+	meta := targetMeta{
+		BFile:   "Parameters/Bmatrix.json",
+		MSeed:   mSeed,
+		X0Seed:  x0Seed,
+		X1Seed:  x1Seed,
+		Persist: true,
+	}
+	return signWithTCoeffs(tCoeffs, maxTrials, opts, meta)
+}
+
+func signWithTCoeffs(tCoeffs []int64, maxTrials int, opts ntru.SamplerOpts, meta targetMeta) (*keys.Signature, error) {
+	pk, err := keys.LoadPublic()
+	if err != nil {
+		return nil, err
+	}
+	sk, err := keys.LoadPrivate()
+	if err != nil {
+		return nil, err
+	}
+	Q := new(big.Int)
+	if _, ok := Q.SetString(pk.Q, 16); !ok {
+		return nil, errors.New("invalid Q")
+	}
+	par, err := ntru.NewParams(pk.N, Q)
+	if err != nil {
+		return nil, err
+	}
+	if len(tCoeffs) != par.N {
+		return nil, fmt.Errorf("t size mismatch: got %d want %d", len(tCoeffs), par.N)
+	}
 	prec := opts.Prec
 	if prec == 0 {
 		prec = 256
@@ -185,12 +218,12 @@ func SignWithOpts(message []byte, maxTrials int, opts ntru.SamplerOpts) (*keys.S
 	S.Opts.UseLog3Cross = opts.UseLog3Cross
 	S.Opts.MaxSignTrials = maxTrials
 	S.Opts.ApplyDefaults(S.Par)
+
 	tPoly := ntru.Int64ToModQPoly(tCoeffs, par)
 	s0, s1, trials, err := S.SamplePreimageTargetOptionB(tPoly, maxTrials)
 	if err != nil {
 		return nil, err
 	}
-	// coefficient-domain copies used for persistence and telemetry
 	s0i := make([]int64, par.N)
 	s1i := make([]int64, par.N)
 	for i := 0; i < par.N; i++ {
@@ -198,8 +231,6 @@ func SignWithOpts(message []byte, maxTrials int, opts ntru.SamplerOpts) (*keys.S
 		s1i[i] = s1.Coeffs[i].Int64()
 	}
 
-	// Compute the same acceptance predicate enforced in the sampler loop:
-	// s2 := center(h*s1 + c1), accept iff CheckNormC(s1, s2).
 	var hPoly ntru.ModQPoly
 	var herr error
 	if len(pk.HCoeffs) == par.N {
@@ -245,14 +276,20 @@ func SignWithOpts(message []byte, maxTrials int, opts ntru.SamplerOpts) (*keys.S
 			linf = v
 		}
 	}
-	// bundle
+
 	sig := keys.NewSignature()
 	sig.Params.N = par.N
 	sig.Params.Q = pk.Q
-	sig.Hash.BFile = "Parameters/Bmatrix.json"
-	sig.Hash.MSeed = keys.EncodeSeed(mSeed)
-	sig.Hash.X0Seed = keys.EncodeSeed(x0Seed)
-	sig.Hash.X1Seed = keys.EncodeSeed(x1Seed)
+	sig.Hash.BFile = meta.BFile
+	if len(meta.MSeed) > 0 {
+		sig.Hash.MSeed = keys.EncodeSeed(meta.MSeed)
+	}
+	if len(meta.X0Seed) > 0 {
+		sig.Hash.X0Seed = keys.EncodeSeed(meta.X0Seed)
+	}
+	if len(meta.X1Seed) > 0 {
+		sig.Hash.X1Seed = keys.EncodeSeed(meta.X1Seed)
+	}
 	sig.Hash.TCoeffs = tCoeffs
 	sig.PublicKey.HCoeffs = pk.HCoeffs
 	sig.Signature.S0 = s0i
@@ -266,10 +303,12 @@ func SignWithOpts(message []byte, maxTrials int, opts ntru.SamplerOpts) (*keys.S
 	sig.Signature.MaxTrials = maxTrials
 	sig.Signature.S2 = s2Vec
 	if measure.Enabled {
-		recordSignatureMeasurements(sig, mSeed, x0Seed, x1Seed)
+		recordSignatureMeasurements(sig, meta.MSeed, meta.X0Seed, meta.X1Seed)
 	}
-	if err := keys.Save(sig); err != nil {
-		return nil, err
+	if meta.Persist {
+		if err := keys.Save(sig); err != nil {
+			return nil, err
+		}
 	}
 	return sig, nil
 }
@@ -318,26 +357,31 @@ func Verify(sig *keys.Signature) error {
 	if err != nil {
 		return err
 	}
-	// Recompute target from seeds and compare
-	sys, err := loadParams()
-	if err != nil {
-		return err
-	}
-	mSeed, err := keys.DecodeSeed(sig.Hash.MSeed)
-	if err != nil {
-		return err
-	}
-	x0Seed, err := keys.DecodeSeed(sig.Hash.X0Seed)
-	if err != nil {
-		return err
-	}
-	x1Seed, err := keys.DecodeSeed(sig.Hash.X1Seed)
-	if err != nil {
-		return err
-	}
-	tCmp, err := ntru.ComputeTargetFromSeeds(sys, sig.Hash.BFile, mSeed, x0Seed, x1Seed)
-	if err != nil {
-		return err
+	// Recompute target from seeds when available; otherwise trust stored t.
+	var tCmp []int64
+	if sig.Hash.MSeed != "" || sig.Hash.X0Seed != "" || sig.Hash.X1Seed != "" {
+		sys, err := loadParams()
+		if err != nil {
+			return err
+		}
+		mSeed, err := keys.DecodeSeed(sig.Hash.MSeed)
+		if err != nil {
+			return err
+		}
+		x0Seed, err := keys.DecodeSeed(sig.Hash.X0Seed)
+		if err != nil {
+			return err
+		}
+		x1Seed, err := keys.DecodeSeed(sig.Hash.X1Seed)
+		if err != nil {
+			return err
+		}
+		tCmp, err = ntru.ComputeTargetFromSeeds(sys, sig.Hash.BFile, mSeed, x0Seed, x1Seed)
+		if err != nil {
+			return err
+		}
+	} else {
+		tCmp = sig.Hash.TCoeffs
 	}
 	if len(tCmp) != len(sig.Hash.TCoeffs) {
 		return errors.New("t size mismatch")
