@@ -208,6 +208,9 @@ type simCtx struct {
 	maskPolyCount     int
 	maskRowOffset     int
 	maskRowCount      int
+	openMaskSaved     *lvcs.Opening
+	openTailSaved     *lvcs.Opening
+	combinedOpenSaved *decs.DECSOpening
 	maskDegreeBound   int
 	oracleLayout      lvcs.OracleLayout
 	maskIndependent   []*ring.Poly
@@ -338,6 +341,7 @@ type Proof struct {
 	Salt             []byte
 	Ctr              [4]uint64
 	Digests          [4][]byte
+	LabelsDigest     []byte
 	Lambda           int
 	Kappa            [4]int
 	Theta            int
@@ -371,6 +375,7 @@ type Proof struct {
 	MaskRowOffset    int
 	MaskRowCount     int
 	MaskDegreeBound  int
+	TailTranscript   []byte
 	Gamma            [][]uint64
 	GammaK           [][]KScalar
 	RoundCounters    [4]uint64 // populated once FS scaffolding lands in Phase 3
@@ -601,6 +606,7 @@ type ProofSnapshot struct {
 	Salt             []byte
 	Ctr              [4]uint64
 	Digests          [][]byte
+	LabelsDigest     []byte
 	Lambda           int
 	Kappa            [4]int
 	Theta            int
@@ -636,6 +642,7 @@ type ProofSnapshot struct {
 	MaskDegreeBound  int
 	RoundCounters    [4]uint64
 	RowOpening       *decs.DECSOpening
+	TailTranscript   []byte
 }
 
 // RunOnce executes a single serialized PACS simulation and captures metrics.
@@ -1574,6 +1581,7 @@ func (p *Proof) Snapshot() ProofSnapshot {
 		Salt:             append([]byte(nil), p.Salt...),
 		Ctr:              p.Ctr,
 		Digests:          digests,
+		LabelsDigest:     append([]byte(nil), p.LabelsDigest...),
 		Lambda:           p.Lambda,
 		Kappa:            p.Kappa,
 		Theta:            p.Theta,
@@ -1609,6 +1617,7 @@ func (p *Proof) Snapshot() ProofSnapshot {
 		MaskDegreeBound:  p.MaskDegreeBound,
 		RoundCounters:    p.RoundCounters,
 		RowOpening:       cloneDECSOpening(p.RowOpening),
+		TailTranscript:   append([]byte(nil), p.TailTranscript...),
 	}
 }
 
@@ -1623,6 +1632,7 @@ func (ps ProofSnapshot) Restore() *Proof {
 		Lambda:          ps.Lambda,
 		Kappa:           ps.Kappa,
 		Theta:           ps.Theta,
+		LabelsDigest:    append([]byte(nil), ps.LabelsDigest...),
 		Chi:             append([]uint64(nil), ps.Chi...),
 		Zeta:            append([]uint64(nil), ps.Zeta...),
 		Tail:            append([]int(nil), ps.Tail...),
@@ -1647,6 +1657,7 @@ func (ps ProofSnapshot) Restore() *Proof {
 		MaskRowCount:    ps.MaskRowCount,
 		MaskDegreeBound: ps.MaskDegreeBound,
 		RoundCounters:   ps.RoundCounters,
+		TailTranscript:  append([]byte(nil), ps.TailTranscript...),
 	}
 	proof.VTargetsBits = append([]byte(nil), ps.VTargetsBits...)
 	proof.VTargetsRows = ps.VTargetsRows
@@ -1779,9 +1790,7 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 		parallelDeg       int
 		aggDeg            int
 		dQ                int
-		maskDegreeBase    int
 		maskDegreeTarget  int
-		maxMaskDegree     int
 		maskDegreeClipped bool
 	)
 	var rho int
@@ -1797,17 +1806,10 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 	}
 	rho = o.Rho
 	// ------------------------------------------------------------- parameters
-	par, err := ntrurio.LoadParams(resolve("Parameters/Parameters.json"), true /* allowMismatch */)
+	ringQ, omega, ncols, err := loadParamsAndOmega(o)
 	if err != nil {
 		if t != nil {
-			t.Skip("missing parameters: " + err.Error())
-		}
-		return nil, false, false, false
-	}
-	ringQ, err := ring.NewRing(par.N, []uint64{par.Q})
-	if err != nil {
-		if t != nil {
-			t.Fatalf("ring.NewRing: %v", err)
+			t.Skip("params/omega: " + err.Error())
 		}
 		return nil, false, false, false
 	}
@@ -1841,17 +1843,7 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 
 	// --- NEW: remake signature rows as coefficient-packing rows over Ω -------------
 	ell := o.Ell
-	// build the evaluation grid Ω (size ncols used below)
-	ncols := o.NCols
-	px := ringQ.NewPoly()
-	px.Coeffs[0][1] = 1
-	pts := ringQ.NewPoly()
-	ringQ.NTT(px, pts)
-	omega := pts.Coeffs[0][:ncols]
-	if err := checkOmega(omega, q); err != nil {
-		fmt.Println("[Ω-check] ", err)
-		return nil, false, false, false
-	}
+	ncols = o.NCols
 	// length of signature block
 	mSig := len(w1) - len(B0m) - len(B0r)
 	uStart := mSig
@@ -1977,22 +1969,6 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 	FparNorm = append(FparNorm, x1Fpar...)
 	FaggNorm := []*ring.Poly{}
 
-	parallelDeg = parallelConstraintDegree(&linfAux.Spec, &rangeSpecVal)
-	aggDeg = aggregatedConstraintDegree()
-	dQ = o.DQOverride
-	if dQ <= 0 {
-		dQ = computeDQFromConstraintDegrees(parallelDeg, aggDeg, len(omega), o.EllPrime)
-	}
-	maskDegreeBase = dQ
-	maxMaskDegree = int(ringQ.N) - 1
-	maskDegreeTarget = maskDegreeBase
-	if maskDegreeTarget > maxMaskDegree {
-		maskDegreeTarget = maxMaskDegree
-		maskDegreeClipped = true
-	}
-	maskDegreeBound = maskDegreeTarget
-	independentMasks = SampleIndependentMaskPolynomials(ringQ, rho, maskDegreeTarget, omega)
-
 	// ---------------------------------------------------------- LVCS.Commit
 	maxDegree := o.DQOverride
 	if maxDegree <= 0 || maxDegree >= int(ringQ.N) {
@@ -2043,75 +2019,8 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 	} else {
 		rows = columnsToRows(ringQ, w1, w2, w3, ell, omega)
 	}
-	witnessRowCount := len(rows)
-	maskRowOffset = witnessRowCount
-	maskRows := evalPolysOnOmega(ringQ, independentMasks, omega)
-	rows = append(rows, maskRows...)
-	maskRowCount = len(maskRows)
-	maskRowValues = copyMatrix(maskRows)
-	unifiedRowPolys := clonePolys(w1[:origW1Len])
-	unifiedRowPolys = append(unifiedRowPolys, clonePolys(independentMasks)...)
-	rowInputs := make([]lvcs.RowInput, len(rows))
-	for i := range rows {
-		rowInputs[i] = lvcs.RowInput{Head: rows[i]}
-	}
-	commitInitStart := time.Now()
-	root, pk, err := lvcs.CommitInitWithParams(ringQ, rowInputs, ell, decsParams)
-	prof.Track(commitInitStart, "LVCS.CommitInit")
-	if err != nil {
-		if t != nil {
-			t.Fatalf("CommitInitWithParams: %v", err)
-		} else {
-			panic(fmt.Sprintf("CommitInitWithParams: %v", err))
-		}
-	}
-	oracleLayout.Witness = lvcs.LayoutSegment{Offset: 0, Count: witnessRowCount}
-	oracleLayout.Mask = lvcs.LayoutSegment{Offset: maskRowOffset, Count: maskRowCount}
-	if err := pk.SetLayout(oracleLayout); err != nil {
-		if t != nil {
-			t.Fatalf("SetLayout: %v", err)
-		} else {
-			panic(fmt.Sprintf("SetLayout: %v", err))
-		}
-	}
 
-	proof := &Proof{Root: root, Lambda: o.Lambda, Theta: o.Theta, Kappa: o.Kappa, RowLayout: rowLayout}
-	proof.MaskRowOffset = maskRowOffset
-	proof.MaskRowCount = maskRowCount
-	proof.MaskDegreeBound = maskDegreeBound
-	if o.Theta > 1 {
-		proof.Chi = append([]uint64(nil), smallFieldChi...)
-		proof.Zeta = append([]uint64(nil), smallFieldOmegaS1.Limb...)
-	}
-	vrf := lvcs.NewVerifierWithParams(ringQ, len(rows), decsParams, ncols)
-	vrf.Root = root
-	baseXOF := NewShake256XOF(64)
-	salt := make([]byte, 32)
-	if _, err := cryptoRand.Read(salt); err != nil {
-		if t != nil {
-			t.Fatalf("rand salt: %v", err)
-		} else {
-			panic(err)
-		}
-	}
-	proof.Salt = append([]byte(nil), salt...)
-	fs := NewFS(baseXOF, salt, FSParams{Lambda: o.Lambda, Kappa: o.Kappa})
-
-	round1 := fsRound(fs, proof, 0, "Gamma", root[:])
-	gammaRNG := round1.RNG
-	Gamma := sampleFSMatrix(o.Eta, len(rows), q, gammaRNG)
-	gammaBytes := bytesFromUint64Matrix(Gamma)
-	vrf.AcceptGamma(Gamma)
-	commitFinishStart := time.Now()
-	Rpolys := lvcs.CommitFinish(pk, Gamma)
-	prof.Track(commitFinishStart, "LVCS.CommitFinish")
-	proof.R = coeffsFromPolysTrunc(Rpolys, decsParams.Degree+1)
-	if !vrf.CommitStep2(Rpolys) {
-		fmt.Println("[deg‑chk] R failed")
-		return nil, false, false, false
-	}
-
-	// ------------------------------------------------------- PACS batching
+	// ------------------------------------------------------- PACS batching (moved earlier to enable mask config)
 	FparProd := buildFpar(ringQ, w1[:origW1Len], w2, w3)
 	theta := BuildThetaPrimeSet(ringQ, A, b1, B0c, B0m, B0r, omega)
 	integerRows := buildFparInteger(ringQ, w1[:origW1Len], w2, theta, mSig)
@@ -2124,6 +2033,115 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 	FparAll = append(FparAll, FparNorm...)
 	FaggAll := append([]*ring.Poly{}, FaggInt...)
 	FaggAll = append(FaggAll, FaggNorm...)
+	parallelDeg, aggDeg, maskDegreeTarget, maskDegreeBound, maskCfg, maskDegreeClipped, err := deriveMaskingConfig(ringQ, o, FparAll, FaggAll, omega)
+	if err != nil {
+		if t != nil {
+			t.Fatalf("deriveMaskingConfig: %v", err)
+		} else {
+			panic(fmt.Sprintf("deriveMaskingConfig: %v", err))
+		}
+	}
+	dQ = maskCfg.DQ
+	maskDegreeBase := maskCfg.DQ
+	independentMasks = SampleIndependentMaskPolynomials(ringQ, rho, maskDegreeTarget, omega)
+
+	witnessRowCount := len(rows)
+	maskRowOffset = witnessRowCount
+	maskRows := evalPolysOnOmega(ringQ, independentMasks, omega)
+	rows = append(rows, maskRows...)
+	maskRowCount = len(maskRows)
+	maskRowValues = copyMatrix(maskRows)
+	// locals for theta>1 FS reuse
+	var (
+		E                 []int
+		maskIdx           []int
+		openMaskSaved     *lvcs.Opening
+		openTailSaved     *lvcs.Opening
+		combinedOpenSaved *decs.DECSOpening
+		FparAtE           [][]uint64
+		FaggAtE           [][]uint64
+		QAtE              [][]uint64
+		okEq4Tail         bool
+	)
+	unifiedRowPolys := clonePolys(w1[:origW1Len])
+	unifiedRowPolys = append(unifiedRowPolys, clonePolys(independentMasks)...)
+	rowInputs := make([]lvcs.RowInput, len(rows))
+	for i := range rows {
+		rowInputs[i] = lvcs.RowInput{Head: rows[i]}
+	}
+	commitInitStart := time.Now()
+	root, pk, oracleLayout, err := commitRows(ringQ, rowInputs, ell, decsParams, witnessRowCount, maskRowOffset, maskRowCount)
+	prof.Track(commitInitStart, "LVCS.CommitInit")
+	if err != nil {
+		if t != nil {
+			t.Fatalf("CommitInitWithParams: %v", err)
+		} else {
+			panic(fmt.Sprintf("CommitInitWithParams: %v", err))
+		}
+	}
+	oracleLayout.Witness = lvcs.LayoutSegment{Offset: 0, Count: witnessRowCount}
+	oracleLayout.Mask = lvcs.LayoutSegment{Offset: maskRowOffset, Count: maskRowCount}
+
+	proof := &Proof{Root: root, Lambda: o.Lambda, Theta: o.Theta, Kappa: o.Kappa, RowLayout: rowLayout}
+	proof.MaskRowOffset = maskRowOffset
+	proof.MaskRowCount = maskRowCount
+	proof.MaskDegreeBound = maskDegreeBound
+	if o.Theta > 1 {
+		proof.Chi = append([]uint64(nil), smallFieldChi...)
+		proof.Zeta = append([]uint64(nil), smallFieldOmegaS1.Limb...)
+	}
+	vrf := lvcs.NewVerifierWithParams(ringQ, len(rows), decsParams, ncols)
+	vrf.Root = root
+	// choose path based on Theta; Theta>1 delegates to runMaskFS
+	baseXOF := NewShake256XOF(64)
+	salt := make([]byte, 32)
+	if _, err := cryptoRand.Read(salt); err != nil {
+		if t != nil {
+			t.Fatalf("rand salt: %v", err)
+		} else {
+			panic(err)
+		}
+	}
+	proof.Salt = append([]byte(nil), salt...)
+	fs := NewFS(baseXOF, salt, FSParams{Lambda: o.Lambda, Kappa: o.Kappa})
+
+	var (
+		Gamma           [][]uint64
+		gammaBytes      []byte
+		GammaPrime      [][]uint64
+		GammaAgg        [][]uint64
+		GammaPrimeK     [][]KScalar
+		GammaAggK       [][]KScalar
+		gammaPrimeBytes []byte
+		gammaAggBytes   []byte
+		GammaPrimePoly  [][]*ring.Poly
+		M               []*ring.Poly
+		MK              []*KPoly
+		Q               []*ring.Poly
+		QK              []*KPoly
+		layoutMasks     []*ring.Poly
+		maskPolyCount   int
+		coeffMatrix     [][]uint64
+		barSets         [][]uint64
+		kPointLimbs     [][]uint64
+		vTargets        [][]uint64
+		points          []uint64
+		evalPointBytes  []byte
+		smallFieldEvals []kf.Elem
+		maskDegreeMax   int
+		evalReqs        []lvcs.EvalRequest
+		Rpolys          []*ring.Poly
+		openMask        *lvcs.Opening
+		openTail        *lvcs.Opening
+		combinedOpen    *decs.DECSOpening
+	)
+	totalParallel := len(FparAll)
+	totalAgg := len(FaggAll)
+	ellPrime := o.EllPrime
+	if ellPrime <= 0 {
+		ellPrime = 1
+	}
+
 	if msgRangeOffset >= 0 {
 		rowLayout.MsgRangeBase = len(FparInt) + msgRangeOffset
 	}
@@ -2131,206 +2149,248 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 		rowLayout.RndRangeBase = len(FparInt) + rndRangeOffset
 	}
 	rowLayout.X1RangeBase = len(FparInt) + x1RangeOffset
-	proof.RowLayout = rowLayout
-	proof.FparNTT = polysToNTTMatrix(FparAll)
-	proof.FaggNTT = polysToNTTMatrix(FaggAll)
 
-	totalParallel := len(FparAll)
-	totalAgg := len(FaggAll)
-
-	transcript2 := [][]byte{root[:], gammaBytes, polysToBytes(Rpolys)}
 	if o.Theta > 1 {
-		transcript2 = append(transcript2, encodeUint64Slice(proof.Chi), encodeUint64Slice(proof.Zeta))
-	}
-	round2 := fsRound(fs, proof, 1, "GammaPrime", transcript2...)
-	seed2 := round2.Seed
-	gammaPrimeRNG := round2.RNG
-	gammaAggRNG := newFSRNG("GammaPrimeAgg", seed2, []byte{1})
-	var (
-		GammaPrime      [][]uint64
-		GammaAgg        [][]uint64
-		GammaPrimeK     [][]KScalar
-		GammaAggK       [][]KScalar
-		gammaPrimeBytes []byte
-		gammaAggBytes   []byte
-	)
-	if o.Theta > 1 {
-		GammaPrimeK = sampleFSMatrixK(rho, totalParallel, o.Theta, q, gammaPrimeRNG)
-		GammaAggK = sampleFSVectorK(rho, totalAgg, o.Theta, q, gammaAggRNG)
+		argsFS := maskFSArgs{
+			ringQ:             ringQ,
+			omega:             omega,
+			q:                 q,
+			rho:               rho,
+			ell:               ell,
+			ellPrime:          o.EllPrime,
+			opts:              o,
+			ncols:             ncols,
+			root:              root,
+			smallFieldK:       smallFieldK,
+			smallFieldChi:     smallFieldChi,
+			smallFieldOmegaS1: smallFieldOmegaS1,
+			smallFieldMuInv:   smallFieldMuInv,
+			PK:                pk,
+			A:                 A,
+			b1:                b1,
+			B0c:               B0c,
+			B0m:               B0m,
+			B0r:               B0r,
+			w1:                w1,
+			w2:                w2,
+			w3:                w3,
+			origW1Len:         origW1Len,
+			mSig:              mSig,
+			msgRangeOffset:    msgRangeOffset,
+			rndRangeOffset:    rndRangeOffset,
+			x1RangeOffset:     x1RangeOffset,
+			FparInt:           FparInt,
+			FparNorm:          FparNorm,
+			FaggInt:           FaggInt,
+			FaggNorm:          FaggNorm,
+			FparAll:           FparAll,
+			FaggAll:           FaggAll,
+			parallelDeg:       parallelDeg,
+			aggDeg:            aggDeg,
+			maskDegreeTarget:  maskDegreeTarget,
+			maskDegreeBound:   maskDegreeBound,
+			maskDegreeClipped: maskDegreeClipped,
+			maskDegreeBase:    maskCfg.DQ,
+			independentMasks:  independentMasks,
+			independentMasksK: independentMasksK,
+			rows:              rows,
+			rowInputs:         rowInputs,
+			witnessRowCount:   witnessRowCount,
+			maskRowOffset:     maskRowOffset,
+			maskRowCount:      maskRowCount,
+			rowLayout:         rowLayout,
+			oracleLayout:      oracleLayout,
+			decsParams:        decsParams,
+		}
+		fsOut, err := runMaskFS(argsFS)
+		if err != nil {
+			if t != nil {
+				t.Fatalf("runMaskFS: %v", err)
+			} else {
+				panic(fmt.Sprintf("runMaskFS: %v", err))
+			}
+		}
+		proof = fsOut.proof
+		Gamma = fsOut.Gamma
+		gammaBytes = bytesFromUint64Matrix(Gamma)
+		GammaPrime = fsOut.GammaPrime
+		GammaAgg = fsOut.GammaAgg
+		GammaPrimeK = fsOut.GammaPrimeK
+		GammaAggK = fsOut.GammaAggK
 		gammaPrimeBytes = bytesFromKScalarMat(GammaPrimeK)
 		gammaAggBytes = bytesFromKScalarMat(GammaAggK)
-		GammaPrime = kMatrixFirstLimb(GammaPrimeK)
-		GammaAgg = kMatrixFirstLimb(GammaAggK)
-	} else {
-		GammaPrime = sampleFSMatrix(rho, totalParallel, q, gammaPrimeRNG)
-		GammaAgg = sampleFSMatrix(rho, totalAgg, q, gammaAggRNG)
-		gammaPrimeBytes = bytesFromUint64Matrix(GammaPrime)
-		gammaAggBytes = bytesFromUint64Matrix(GammaAgg)
-	}
-	proof.GammaPrime = copyMatrix(GammaPrime)
-	proof.GammaAgg = copyMatrix(GammaAgg)
-	GammaPrimePoly := makeGammaPrimePolys(ringQ, GammaPrime)
-	proof.GammaPrimeK = copyKMatrix(GammaPrimeK)
-	proof.GammaAggK = copyKMatrix(GammaAggK)
-
-	fmt.Printf("→ parallel rows: %d; aggregated rows: %d; witness cols: %d\n", totalParallel, totalAgg, len(w1))
-
-	fmt.Printf("[degree] d=%d, d'=%d, dQ=%d\n", parallelDeg, aggDeg, dQ)
-	if maskDegreeClipped {
-		fmt.Printf("[mask] clipping mask degree from %d to %d due to ring size\n", maskDegreeBase, maskDegreeTarget)
-	}
-	sumFpar := sumPolyList(ringQ, FparAll, omega)
-	sumFagg := sumPolyList(ringQ, FaggAll, omega)
-
-	var (
-		M  []*ring.Poly
-		MK []*KPoly
-		QK []*KPoly
-	)
-	if o.Theta > 1 {
-		MK = BuildMaskPolynomialsK(ringQ, smallFieldK, rho, maskDegreeTarget, omega, GammaPrimeK, GammaAggK, sumFpar, sumFagg)
-		M = make([]*ring.Poly, rho)
-		for i := range MK {
-			poly := ringQ.NewPoly()
-			for idx := range poly.Coeffs[0] {
-				if idx < len(MK[i].Limbs[0]) {
-					poly.Coeffs[0][idx] = MK[i].Limbs[0][idx] % q
-				}
-			}
-			ringQ.NTT(poly, poly)
-			M[i] = poly
-		}
-	} else {
-		M = BuildMaskPolynomials(ringQ, rho, maskDegreeTarget, omega, GammaPrime, GammaAgg, sumFpar, sumFagg)
-	}
-
-	maskDegreeMax := -1
-	if o.Theta > 1 {
+		GammaPrimePoly = makeGammaPrimePolys(ringQ, GammaPrime)
+		M = fsOut.M
+		MK = fsOut.MK
+		Q = fsOut.Q
+		QK = fsOut.QK
+		Rpolys = fsOut.Rpolys
+		layoutMasks = clonePolys(M)
+		maskRowValues = evalPolysOnOmega(ringQ, layoutMasks, omega)
+		maskPolyCount = len(layoutMasks)
+		maskDegreeMax = -1
 		for _, kp := range MK {
 			if kp != nil && kp.Degree > maskDegreeMax {
 				maskDegreeMax = kp.Degree
 			}
 		}
+		barSets = fsOut.barSets
+		coeffMatrix = fsOut.coeffMatrix
+		kPointLimbs = fsOut.kPoint
+		smallFieldEvals = fsOut.smallFieldEvals
+		vTargets = fsOut.vTargets
+		E = append([]int(nil), fsOut.tailIndices...)
+		openMaskSaved = fsOut.openMask
+		openTailSaved = fsOut.openTail
+		combinedOpenSaved = fsOut.combinedOpen
+		evalReqs = fsOut.evalReqs
+		openMask = openMaskSaved
+		openTail = openTailSaved
+		combinedOpen = combinedOpenSaved
+		proof.FparNTT = polysToNTTMatrix(FparAll)
+		proof.FaggNTT = polysToNTTMatrix(FaggAll)
+		proof.QNTT = polysToNTTMatrix(Q)
+		proof.MKData = snapshotKPolys(MK)
+		proof.QKData = snapshotKPolys(QK)
+		proof.RowLayout = rowLayout
+		vrf.AcceptGamma(Gamma)
+		if !vrf.CommitStep2(Rpolys) {
+			if t != nil {
+				t.Fatalf("deg-check R failed")
+			} else {
+				return nil, false, false, false
+			}
+		}
+		if t != nil {
+			fsDbg := NewFS(NewShake256XOF(64), proof.Salt, FSParams{Lambda: o.Lambda, Kappa: o.Kappa})
+			rootBytes := root[:]
+			if _, err := verifyRoundDigest(fsDbg, 0, proof.Ctr[0], [][]byte{rootBytes}, proof.Digests[0], proof.Kappa[0]); err != nil {
+				fmt.Printf("[debug fs] round0 mismatch: %v\n", err)
+			}
+			transcript2 := [][]byte{rootBytes, gammaBytes, polysToBytes(Rpolys)}
+			if o.Theta > 1 {
+				transcript2 = append(transcript2, encodeUint64Slice(proof.Chi), encodeUint64Slice(proof.Zeta))
+			}
+			if _, err := verifyRoundDigest(fsDbg, 1, proof.Ctr[1], transcript2, proof.Digests[1], proof.Kappa[1]); err != nil {
+				fmt.Printf("[debug fs] round1 mismatch: %v\n", err)
+			}
+			transcript3 := [][]byte{rootBytes, gammaBytes, gammaPrimeBytes, gammaAggBytes, polysToBytes(Q)}
+			if len(proof.Digests[2]) == 0 {
+				fmt.Printf("[debug fs] round2 digest empty\n")
+			}
+			if _, err := verifyRoundDigest(fsDbg, 2, proof.Ctr[2], transcript3, proof.Digests[2], proof.Kappa[2]); err != nil {
+				fmt.Printf("[debug fs] round2 mismatch: %v (ctr=%d expLen=%d)\n", err, proof.Ctr[2], len(proof.Digests[2]))
+			}
+			transcript4 := [][]byte{
+				rootBytes,
+				gammaBytes,
+				bytesFromKScalarMat(proof.GammaPrimeK),
+				bytesFromKScalarMat(proof.GammaAggK),
+				bytesFromUint64Matrix(proof.KPoint),
+				bytesFromUint64Matrix(proof.CoeffMatrix),
+				bytesFromUint64Matrix(proof.BarSetsMatrix()),
+				bytesFromUint64Matrix(proof.VTargetsMatrix()),
+			}
+			transcript4Prover := [][]byte{
+				rootBytes,
+				gammaBytes,
+				bytesFromKScalarMat(GammaPrimeK),
+				bytesFromKScalarMat(GammaAggK),
+				bytesFromUint64Matrix(kPointLimbs),
+				bytesFromUint64Matrix(coeffMatrix),
+				bytesFromUint64Matrix(barSets),
+				bytesFromUint64Matrix(vTargets),
+			}
+			if !equalByteSlices(flattenBytes(transcript4), flattenBytes(transcript4Prover)) {
+				fmt.Printf("[debug fs] transcript4 differs between prover/verifier view\n")
+			}
+			if _, err := verifyRoundDigest(fsDbg, 3, proof.Ctr[3], transcript4, proof.Digests[3], proof.Kappa[3]); err != nil {
+				fmt.Printf("[debug fs] round3 mismatch: %v (ctr=%d len=%d kappa=%v)\n", err, proof.Ctr[3], len(proof.Digests[3]), proof.Kappa)
+			}
+		}
 	} else {
+		// Original Theta==1 path unchanged
+		round1 := fsRound(fs, proof, 0, "Gamma", root[:])
+		gammaRNG := round1.RNG
+		Gamma = sampleFSMatrix(o.Eta, len(rows), q, gammaRNG)
+		gammaBytes = bytesFromUint64Matrix(Gamma)
+		vrf.AcceptGamma(Gamma)
+		commitFinishStart := time.Now()
+		Rpolys := lvcs.CommitFinish(pk, Gamma)
+		prof.Track(commitFinishStart, "LVCS.CommitFinish")
+		proof.R = coeffsFromPolysTrunc(Rpolys, decsParams.Degree+1)
+		if !vrf.CommitStep2(Rpolys) {
+			fmt.Println("[deg‑chk] R failed")
+			return nil, false, false, false
+		}
+		if msgRangeOffset >= 0 {
+			rowLayout.MsgRangeBase = len(FparInt) + msgRangeOffset
+		}
+		if rndRangeOffset >= 0 {
+			rowLayout.RndRangeBase = len(FparInt) + rndRangeOffset
+		}
+		rowLayout.X1RangeBase = len(FparInt) + x1RangeOffset
+		proof.RowLayout = rowLayout
+		proof.FparNTT = polysToNTTMatrix(FparAll)
+		proof.FaggNTT = polysToNTTMatrix(FaggAll)
+		totalParallel := len(FparAll)
+		totalAgg := len(FaggAll)
+		transcript2 := [][]byte{root[:], gammaBytes, polysToBytes(Rpolys)}
+		round2 := fsRound(fs, proof, 1, "GammaPrime", transcript2...)
+		seed2 := round2.Seed
+		gammaPrimeRNG := round2.RNG
+		gammaAggRNG := newFSRNG("GammaPrimeAgg", seed2, []byte{1})
+		GammaPrime = sampleFSMatrix(rho, totalParallel, q, gammaPrimeRNG)
+		GammaAgg = sampleFSMatrix(rho, totalAgg, q, gammaAggRNG)
+		gammaPrimeBytes = bytesFromUint64Matrix(GammaPrime)
+		gammaAggBytes = bytesFromUint64Matrix(GammaAgg)
+		proof.GammaPrime = copyMatrix(GammaPrime)
+		proof.GammaAgg = copyMatrix(GammaAgg)
+		GammaPrimePoly = makeGammaPrimePolys(ringQ, GammaPrime)
+		fmt.Printf("→ parallel rows: %d; aggregated rows: %d; witness cols: %d\n", totalParallel, totalAgg, len(w1))
+		fmt.Printf("[degree] d=%d, d'=%d, dQ=%d\n", parallelDeg, aggDeg, dQ)
+		if maskDegreeClipped {
+			fmt.Printf("[mask] clipping mask degree from %d to %d due to ring size\n", maskDegreeBase, maskDegreeTarget)
+		}
+		sumFpar := sumPolyList(ringQ, FparAll, omega)
+		sumFagg := sumPolyList(ringQ, FaggAll, omega)
+		M = BuildMaskPolynomials(ringQ, rho, maskDegreeTarget, omega, GammaPrime, GammaAgg, sumFpar, sumFagg)
+		maskDegreeMax = -1
 		for _, poly := range M {
 			deg := maxPolyDegree(ringQ, poly)
 			if deg > maskDegreeMax {
 				maskDegreeMax = deg
 			}
 		}
-	}
-	if maskDegreeMax > maskDegreeTarget {
-		panic(fmt.Sprintf("mask degree %d exceeds target=%d", maskDegreeMax, maskDegreeTarget))
-	}
-	fmt.Printf("[mask] max-degree=%d (target=%d, dQ=%d)\n", maskDegreeMax, maskDegreeTarget, dQ)
-
-	witnessPolyCount := origW1Len
-	if witnessPolyCount < 0 || witnessPolyCount > len(unifiedRowPolys) {
-		panic(fmt.Sprintf("invalid witnessPolyCount=%d unifiedRowPolys=%d", witnessPolyCount, len(unifiedRowPolys)))
-	}
-	layoutWitness := clonePolys(w1[:origW1Len])
-	layoutMasks := clonePolys(M)
-	unifiedRowPolys = append(append([]*ring.Poly{}, layoutWitness...), layoutMasks...)
-	maskRowValues = evalPolysOnOmega(ringQ, layoutMasks, omega)
-	qLayout := BuildQLayout{
-		WitnessPolys: layoutWitness,
-		MaskPolys:    layoutMasks,
-	}
-
-	Q := BuildQ(ringQ, qLayout, FparInt, FparNorm, FaggInt, FaggNorm, GammaPrime, GammaAgg)
-	if o.Theta > 1 {
-		QK = BuildQK(ringQ, smallFieldK, MK, FparAll, FaggAll, GammaPrimeK, GammaAggK)
-		proof.MKData = snapshotKPolys(MK)
-		proof.QKData = snapshotKPolys(QK)
-	} else {
-		proof.MKData = nil
-		proof.QKData = nil
-	}
-	proof.QNTT = polysToNTTMatrix(Q)
-
-	maskPolyCount := len(layoutMasks)
-
-	transcript3 := [][]byte{
-		root[:],
-		gammaBytes,
-		gammaPrimeBytes,
-		gammaAggBytes,
-		polysToBytes(Q),
-	}
-	round3Label := "EvalPoints"
-	if o.Theta > 1 {
-		round3Label = "EvalKPoint"
-	}
-	round3 := fsRound(fs, proof, 2, round3Label, transcript3...)
-	seed3 := round3.Seed
-
-	ellPrime := o.EllPrime
-	if ellPrime <= 0 {
-		ellPrime = 1
-	}
-	var points []uint64
-	var coeffMatrix [][]uint64
-	var barSets [][]uint64
-	var vTargets [][]uint64
-	var evalReqs []lvcs.EvalRequest
-	var evalPointBytes []byte
-	var kPointLimbs [][]uint64
-	smallFieldEvals := make([]kf.Elem, 0, ellPrime)
-
-	if o.Theta > 1 {
-		kPointRNG := round3.RNG
-		coeffMatrix = make([][]uint64, 0, ellPrime*o.Theta)
-		evalReqs = make([]lvcs.EvalRequest, 0, ellPrime*o.Theta)
-		kPointLimbs = make([][]uint64, 0, ellPrime)
-		for len(smallFieldEvals) < ellPrime {
-			limbs := make([]uint64, o.Theta)
-			for i := 0; i < o.Theta; i++ {
-				limbs[i] = kPointRNG.nextU64() % q
-			}
-			zeroTail := true
-			for i := 1; i < len(limbs); i++ {
-				if limbs[i]%q != 0 {
-					zeroTail = false
-					break
-				}
-			}
-			candidate := smallFieldK.Phi(limbs)
-			conflict := false
-			for _, w := range omega {
-				if elemEqual(smallFieldK, candidate, smallFieldK.EmbedF(w%q)) {
-					conflict = true
-					break
-				}
-			}
-			if !conflict {
-				for _, prev := range smallFieldEvals {
-					if elemEqual(smallFieldK, candidate, prev) {
-						conflict = true
-						break
-					}
-				}
-			}
-			if zeroTail || conflict {
-				continue
-			}
-			coeffBlock := buildKPointCoeffMatrix(ringQ, smallFieldK, omega, rows, candidate, smallFieldMuInv, maskRowOffset, maskRowCount)
-			for i := range coeffBlock {
-				rowCopy := append([]uint64(nil), coeffBlock[i]...)
-				evalReqs = append(evalReqs, lvcs.EvalRequest{
-					Coeffs: rowCopy,
-					KPoint: append([]uint64(nil), candidate.Limb...),
-				})
-				coeffMatrix = append(coeffMatrix, rowCopy)
-			}
-			smallFieldEvals = append(smallFieldEvals, candidate)
-			kPointLimbs = append(kPointLimbs, append([]uint64(nil), candidate.Limb...))
+		if maskDegreeMax > maskDegreeTarget {
+			panic(fmt.Sprintf("mask degree %d exceeds target=%d", maskDegreeMax, maskDegreeTarget))
 		}
-		evalInitStart := time.Now()
-		barSets = lvcs.EvalInitMany(ringQ, pk, evalReqs)
-		prof.Track(evalInitStart, "LVCS.EvalInitMany")
-		vTargets = computeVTargets(q, rows, coeffMatrix)
-		evalPointBytes = nil
-	} else {
+		fmt.Printf("[mask] max-degree=%d (target=%d, dQ=%d)\n", maskDegreeMax, maskDegreeTarget, dQ)
+		witnessPolyCount := origW1Len
+		if witnessPolyCount < 0 || witnessPolyCount > len(unifiedRowPolys) {
+			panic(fmt.Sprintf("invalid witnessPolyCount=%d unifiedRowPolys=%d", witnessPolyCount, len(unifiedRowPolys)))
+		}
+		layoutWitness := clonePolys(w1[:origW1Len])
+		layoutMasks = clonePolys(M)
+		unifiedRowPolys = append(append([]*ring.Poly{}, layoutWitness...), layoutMasks...)
+		maskRowValues = evalPolysOnOmega(ringQ, layoutMasks, omega)
+		qLayout := BuildQLayout{
+			WitnessPolys: layoutWitness,
+			MaskPolys:    layoutMasks,
+		}
+		Q = BuildQ(ringQ, qLayout, FparInt, FparNorm, FaggInt, FaggNorm, GammaPrime, GammaAgg)
+		proof.QNTT = polysToNTTMatrix(Q)
+		maskPolyCount = len(layoutMasks)
+		transcript3 := [][]byte{
+			root[:],
+			gammaBytes,
+			gammaPrimeBytes,
+			gammaAggBytes,
+			polysToBytes(Q),
+		}
+		round3Label := "EvalPoints"
+		round3 := fsRound(fs, proof, 2, round3Label, transcript3...)
+		seed3 := round3.Seed
 		evalPointRNG := round3.RNG
 		points = sampleDistinctFieldElemsAvoid(ellPrime, q, evalPointRNG, omega)
 		coeffRNG := newFSRNG("EvalCoeffs", seed3, []byte{1})
@@ -2360,18 +2420,24 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 		proof.KPoint = nil
 	}
 
-	var transcript4 [][]byte
+	var verifyMaskOpen *decs.DECSOpening
 	if o.Theta > 1 {
-		transcript4 = [][]byte{
-			root[:],
-			gammaBytes,
-			gammaPrimeBytes,
-			bytesFromUint64Matrix(kPointLimbs),
-			bytesFromUint64Matrix(coeffMatrix),
-			bytesFromUint64Matrix(barSets),
-			bytesFromUint64Matrix(vTargets),
+		maskIdx = make([]int, len(E))
+		for i := 0; i < len(E); i++ {
+			maskIdx[i] = ncols + i
 		}
+		openMask = openMaskSaved
+		openTail = openTailSaved
+		combinedOpen = combinedOpenSaved
+		verifyMaskOpen = cloneDECSOpening(proof.MOpening)
+		proof.RowOpening = cloneDECSOpening(combinedOpen)
+		decs.PackOpening(proof.RowOpening)
+		FparAtE = evalPolySetAtIndices(ringQ, FparAll, E)
+		FaggAtE = evalPolySetAtIndices(ringQ, FaggAll, E)
+		QAtE = evalPolySetAtIndices(ringQ, Q, E)
+		okEq4Tail = checkEq4OnTailOpen(ringQ, smallFieldK, o.Theta, E, Q, QK, MK, FparAll, FaggAll, GammaPrime, GammaAgg, GammaPrimeK, GammaAggK, proof.MOpening)
 	} else {
+		var transcript4 [][]byte
 		transcript4 = [][]byte{
 			root[:],
 			gammaBytes,
@@ -2381,55 +2447,58 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 			bytesFromUint64Matrix(barSets),
 			bytesFromUint64Matrix(vTargets),
 		}
-	}
-	round4 := fsRound(fs, proof, 3, "TailPoints", transcript4...)
-	tailStart := ncols + ell
-	tailLen := int(ringQ.N) - tailStart
-	if tailLen < ell {
-		if t != nil {
-			t.Fatalf("insufficient tail: tailLen=%d ell=%d", tailLen, ell)
-		} else {
-			panic(fmt.Sprintf("insufficient tail: tailLen=%d ell=%d", tailLen, ell))
-		}
-	}
-	tailRNG := round4.RNG
-	E := sampleDistinctIndices(tailStart, tailLen, ell, tailRNG)
-	proof.Tail = append([]int(nil), E...)
-
-	maskIdx := make([]int, ell)
-	for i := 0; i < ell; i++ {
-		maskIdx[i] = ncols + i
-	}
-	evalFinishStart := time.Now()
-	openMask := lvcs.EvalFinish(pk, maskIdx)
-	prof.Track(evalFinishStart, "LVCS.EvalFinish")
-	evalTailStart := time.Now()
-	openTail := lvcs.EvalFinish(pk, E)
-	prof.Track(evalTailStart, "LVCS.EvalFinish")
-	combinedOpen := combineOpenings(openMask.DECSOpen, openTail.DECSOpen)
-	proof.RowOpening = cloneDECSOpening(combinedOpen)
-	// Pack row opening for compact serialization
-	decs.PackOpening(proof.RowOpening)
-
-	maskEval := evalPolySetAtIndices(ringQ, layoutMasks, E)
-	maskOpen := makeMaskTailOpening(E, maskEval)
-	verifyMaskOpen := cloneDECSOpening(maskOpen)
-	proof.MOpening = cloneDECSOpening(maskOpen)
-	decs.PackOpening(proof.MOpening)
-
-	for _, idx := range E {
-		if idx < tailStart || idx >= int(ringQ.N) {
+		round4 := fsRound(fs, proof, 3, "TailPoints", transcript4...)
+		tailStart := ncols + ell
+		tailLen := int(ringQ.N) - tailStart
+		if tailLen < ell {
 			if t != nil {
-				t.Fatalf("bad E: idx=%d not in tail [tailStart=%d, N=%d)", idx, tailStart, ringQ.N)
+				t.Fatalf("insufficient tail: tailLen=%d ell=%d", tailLen, ell)
 			} else {
-				panic(fmt.Sprintf("bad E: idx=%d not in tail [tailStart=%d, N=%d)", idx, tailStart, ringQ.N))
+				panic(fmt.Sprintf("insufficient tail: tailLen=%d ell=%d", tailLen, ell))
 			}
 		}
+		tailRNG := round4.RNG
+		E = sampleDistinctIndices(tailStart, tailLen, ell, tailRNG)
+		proof.Tail = append([]int(nil), E...)
+
+		maskIdx = make([]int, ell)
+		for i := 0; i < ell; i++ {
+			maskIdx[i] = ncols + i
+		}
+		evalFinishStart := time.Now()
+		openMask = lvcs.EvalFinish(pk, maskIdx)
+		prof.Track(evalFinishStart, "LVCS.EvalFinish")
+		evalTailStart := time.Now()
+		openTail = lvcs.EvalFinish(pk, E)
+		prof.Track(evalTailStart, "LVCS.EvalFinish")
+		combinedOpen = combineOpenings(openMask.DECSOpen, openTail.DECSOpen)
+		proof.RowOpening = cloneDECSOpening(combinedOpen)
+		// Pack row opening for compact serialization
+		decs.PackOpening(proof.RowOpening)
+
+		maskEval := evalPolySetAtIndices(ringQ, layoutMasks, E)
+		maskOpen := makeMaskTailOpening(E, maskEval)
+		verifyMaskOpen = cloneDECSOpening(maskOpen)
+		proof.MOpening = cloneDECSOpening(maskOpen)
+		decs.PackOpening(proof.MOpening)
+		openMaskSaved = openMask
+		openTailSaved = openTail
+		combinedOpenSaved = combinedOpen
+
+		for _, idx := range E {
+			if idx < tailStart || idx >= int(ringQ.N) {
+				if t != nil {
+					t.Fatalf("bad E: idx=%d not in tail [tailStart=%d, N=%d)", idx, tailStart, ringQ.N)
+				} else {
+					panic(fmt.Sprintf("bad E: idx=%d not in tail [tailStart=%d, N=%d)", idx, tailStart, ringQ.N))
+				}
+			}
+		}
+		FparAtE = evalPolySetAtIndices(ringQ, FparAll, E)
+		FaggAtE = evalPolySetAtIndices(ringQ, FaggAll, E)
+		QAtE = evalPolySetAtIndices(ringQ, Q, E)
+		okEq4Tail = checkEq4OnTailOpen(ringQ, smallFieldK, o.Theta, E, Q, QK, MK, FparAll, FaggAll, GammaPrime, GammaAgg, GammaPrimeK, GammaAggK, proof.MOpening)
 	}
-	FparAtE := evalPolySetAtIndices(ringQ, FparAll, E)
-	FaggAtE := evalPolySetAtIndices(ringQ, FaggAll, E)
-	QAtE := evalPolySetAtIndices(ringQ, Q, E)
-	okEq4Tail := checkEq4OnTailOpen(ringQ, smallFieldK, o.Theta, E, Q, QK, MK, FparAll, FaggAll, GammaPrime, GammaAgg, GammaPrimeK, GammaAggK, proof.MOpening)
 
 	proofSize := estimateProofSize(proof)
 	// Print a detailed proof size breakdown to help identify large components.
@@ -2495,9 +2564,9 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 		pk:                pk,
 		vTargets:          vTargets,
 		maskIdx:           maskIdx,
-		maskOpen:          openMask,
-		tailOpen:          openTail,
-		combinedOpen:      combinedOpen,
+		maskOpen:          openMaskSaved,
+		tailOpen:          openTailSaved,
+		combinedOpen:      combinedOpenSaved,
 		proof:             proof,
 		bar:               barSets,
 		C:                 coeffMatrix,
@@ -2556,6 +2625,9 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 		okFirstLimbOmega = checkFirstLimbConsistencyOmega(ringQ, smallFieldK, omega, Q, QK)
 	}
 	okEq4 := okEq4Omega && okEq4K && okEq4Tail && okFirstLimbOmega
+	if t != nil && o.Theta > 1 && !okEq4 {
+		fmt.Printf("[debug theta>1] okEq4Omega=%v okEq4K=%v okEq4Tail=%v okFirstLimbOmega=%v\n", okEq4Omega, okEq4K, okEq4Tail, okFirstLimbOmega)
+	}
 	var okSum bool
 	if o.Theta > 1 {
 		okSum = VerifyQK_QK(ringQ, smallFieldK, omega, QK)
@@ -2866,6 +2938,18 @@ func evalPolySetAtIndices(r *ring.Ring, polys []*ring.Poly, indices []int) [][]u
 		out[i] = row
 	}
 	return out
+}
+
+func flattenBytes(parts [][]byte) []byte {
+	var out []byte
+	for _, p := range parts {
+		out = append(out, p...)
+	}
+	return out
+}
+
+func equalByteSlices(a, b []byte) bool {
+	return bytes.Equal(a, b)
 }
 
 func makeMaskTailOpening(indices []int, values [][]uint64) *decs.DECSOpening {
@@ -3252,65 +3336,71 @@ func checkEq4OnTailOpen(
 		idx := maskOpen.IndexAt(pos)
 		posByIdx[idx] = pos
 	}
+	if len(posByIdx) == 0 && theta > 1 {
+		fmt.Printf("[debug tail] empty opening entries (tail len=%d)\n", len(tail))
+	}
+	// Precompute coefficient-domain views of Fpar/Fagg to align with QK construction.
+	coeffFpar := make([]*ring.Poly, len(Fpar))
+	for i := range Fpar {
+		if Fpar[i] == nil {
+			continue
+		}
+		tmp := r.NewPoly()
+		r.InvNTT(Fpar[i], tmp)
+		coeffFpar[i] = tmp
+	}
+	coeffFagg := make([]*ring.Poly, len(Fagg))
+	for i := range Fagg {
+		if Fagg[i] == nil {
+			continue
+		}
+		tmp := r.NewPoly()
+		r.InvNTT(Fagg[i], tmp)
+		coeffFagg[i] = tmp
+	}
 	for _, idx := range tail {
 		if _, ok := posByIdx[idx]; !ok {
+			if theta > 1 {
+				fmt.Printf("[debug tail] missing idx %d in opening (entries=%d) tail=%v openIdx=%v\n", idx, len(posByIdx), tail, maskOpen.AllIndices())
+			}
 			return false
 		}
 	}
 	rho := len(Q)
 	for i := 0; i < rho; i++ {
-		var limbCoeff []*ring.Poly
-		var lhsLimbs []uint64
-		var maskLimbs []uint64
-		if theta > 1 {
-			if K == nil || i >= len(QK) || QK[i] == nil {
-				return false
-			}
-			limbCoeff = kpolyToCoeffPolys(r, QK[i])
-			lhsLimbs = make([]uint64, theta)
-			maskLimbs = make([]uint64, theta)
-		}
 		for _, idx := range tail {
 			pos := posByIdx[idx]
 			coeffPos := idx % N
 			if coeffPos < 0 {
 				coeffPos += N
 			}
-			if theta > 1 && K != nil {
-				for j := 0; j < theta; j++ {
-					coeffs := limbCoeff[j].Coeffs[0]
-					if coeffPos >= len(coeffs) {
-						return false
+			if theta > 1 {
+				lhs := Q[i].Coeffs[0][coeffPos] % q
+				rhs := decs.GetOpeningPval(maskOpen, pos, i) % q
+				for j := range Fpar {
+					if Fpar[j] == nil {
+						continue
 					}
-					lhsLimbs[j] = coeffs[coeffPos] % q
-					if i >= len(MK) || MK[i] == nil || coeffPos >= len(MK[i].Limbs[j]) {
-						return false
+					fval := Fpar[j].Coeffs[0][coeffPos] % q
+					var g uint64
+					if len(gammaF) > i && len(gammaF[i]) > j {
+						g = gammaF[i][j] % q
 					}
-					maskLimbs[j] = MK[i].Limbs[j][coeffPos] % q
+					rhs = modAdd(rhs, modMul(g, fval, q), q)
 				}
-				lhs := K.Phi(lhsLimbs)
-				rhs := K.Phi(maskLimbs)
-				if i < len(gammaK) {
-					row := gammaK[i]
-					for j := range Fpar {
-						if j >= len(row) || Fpar[j] == nil {
-							continue
-						}
-						fval := evalAtIndexF(r, Fpar[j], coeffPos)
-						rhs = K.Add(rhs, K.Mul(K.Phi(row[j]), K.EmbedF(fval%q)))
+				for j := range Fagg {
+					if Fagg[j] == nil {
+						continue
 					}
-				}
-				if i < len(gammaAggK) {
-					row := gammaAggK[i]
-					for j := range Fagg {
-						if j >= len(row) || Fagg[j] == nil {
-							continue
-						}
-						fval := evalAtIndexF(r, Fagg[j], coeffPos)
-						rhs = K.Add(rhs, K.Mul(K.Phi(row[j]), K.EmbedF(fval%q)))
+					fval := Fagg[j].Coeffs[0][coeffPos] % q
+					var g uint64
+					if len(gammaAggF) > i && len(gammaAggF[i]) > j {
+						g = gammaAggF[i][j] % q
 					}
+					rhs = modAdd(rhs, modMul(g, fval, q), q)
 				}
-				if !elemEqual(K, lhs, rhs) {
+				if lhs != rhs {
+					fmt.Printf("[debug tail] eq4 tail mismatch first limb i=%d idx=%d lhs=%d rhs=%d\n", i, idx, lhs, rhs)
 					return false
 				}
 			} else {

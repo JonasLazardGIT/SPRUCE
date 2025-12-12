@@ -49,13 +49,6 @@ func BuildPublicLabels(pub PublicInputs) []PublicLabel {
 	if len(pub.B) > 0 {
 		appendPoly("B", pub.B)
 	}
-	if len(pub.T) > 0 {
-		buf := new(bytes.Buffer)
-		for _, v := range pub.T {
-			_ = binary.Write(buf, binary.LittleEndian, int64(v))
-		}
-		labels = append(labels, PublicLabel{Name: "T", Data: buf.Bytes()})
-	}
 	if len(pub.U) > 0 {
 		appendPoly("U", pub.U)
 	}

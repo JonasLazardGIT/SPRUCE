@@ -11,17 +11,33 @@ type PublicInputs struct {
 	B      []*ring.Poly
 	T      []int64
 	U      []*ring.Poly
+	BoundB int64
 	Extras map[string]interface{}
 }
 
 // WitnessInputs collects witness vectors.
 type WitnessInputs struct {
-	M1     []*ring.Poly
-	M2     []*ring.Poly
-	RU0    []*ring.Poly
-	RU1    []*ring.Poly
-	R      []*ring.Poly
+	M1  []*ring.Poly
+	M2  []*ring.Poly
+	RU0 []*ring.Poly
+	RU1 []*ring.Poly
+	R   []*ring.Poly
+	R0  []*ring.Poly
+	R1  []*ring.Poly
+	U   []*ring.Poly
+	// T can be kept internal (hash output) when not exposed as public.
+	T      []int64
 	Extras map[string]interface{}
+}
+
+// ConstraintSet groups the F-polys to be masked/committed in the prover.
+// Split mirrors the PACS distinction between parallel and aggregated
+// constraints, and integer vs. normalized, to fit existing masking routines.
+type ConstraintSet struct {
+	FparInt  []*ring.Poly
+	FparNorm []*ring.Poly
+	FaggInt  []*ring.Poly
+	FaggNorm []*ring.Poly
 }
 
 // StatementBuilder defines an interface to build/prove/verify a statement.

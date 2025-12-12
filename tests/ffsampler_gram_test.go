@@ -10,13 +10,13 @@ import (
 
 // Verifies per-slot Gram positivity and self-consistency.
 func TestFFSampler_GramPositivity(t *testing.T) {
-    par := quickParamsNQ()
-    // Use a realistic small trapdoor
-    f, g, F, G := genTrapdoorKey(t, par, 1.2)
-    _ = ntru.SolveOpts{Prec: 128, Reduce: true, MaxIters: 3}
-    if !ntru.CheckNTRUIdentity(f, g, F, G, par) {
-        t.Fatalf("solver identity failed")
-    }
+	par := quickParamsNQ()
+	// Use a realistic small trapdoor
+	f, g, F, G := genTrapdoorKey(t, par, 1.2)
+	_ = ntru.SolveOpts{Prec: 128, Reduce: true, MaxIters: 3}
+	if !ntru.CheckNTRUIdentity(f, g, F, G, par) {
+		t.Fatalf("solver identity failed")
+	}
 	if !ntru.CheckNTRUIdentity(f, g, F, G, par) {
 		t.Fatalf("solver identity failed")
 	}

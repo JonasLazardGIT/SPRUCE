@@ -82,7 +82,11 @@ func VerifyNIZK(proof *Proof) (okLin, okEq4, okSum bool, err error) {
 	}
 	fs := NewFS(NewShake256XOF(64), proof.Salt, FSParams{Lambda: lambda, Kappa: proof.Kappa})
 	rootBytes := append([]byte(nil), proof.Root[:]...)
-	h1, err := verifyRoundDigest(fs, 0, proof.Ctr[0], [][]byte{rootBytes}, proof.Digests[0], proof.Kappa[0])
+	material0 := [][]byte{rootBytes}
+	if len(proof.LabelsDigest) > 0 {
+		material0 = append(material0, proof.LabelsDigest)
+	}
+	h1, err := verifyRoundDigest(fs, 0, proof.Ctr[0], material0, proof.Digests[0], proof.Kappa[0])
 	if err != nil {
 		return false, false, false, fmt.Errorf("VerifyNIZK: FS round 0: %w", err)
 	}
@@ -118,6 +122,9 @@ func VerifyNIZK(proof *Proof) (okLin, okEq4, okSum bool, err error) {
 	gammaBytes := bytesFromUint64Matrix(Gamma)
 	rBytes := polysToBytes(Rpolys)
 	transcript2 := [][]byte{rootBytes, gammaBytes, rBytes}
+	if len(proof.LabelsDigest) > 0 {
+		transcript2 = append(transcript2, proof.LabelsDigest)
+	}
 	if proof.Theta > 1 {
 		if len(proof.Chi) == 0 || len(proof.Zeta) == 0 {
 			return false, false, false, errors.New("VerifyNIZK: missing Chi/Zeta for θ>1")
@@ -193,6 +200,9 @@ func VerifyNIZK(proof *Proof) (okLin, okEq4, okSum bool, err error) {
 		gammaAggBytes,
 		polysToBytes(QPolys),
 	}
+	if len(proof.LabelsDigest) > 0 {
+		transcript3 = append(transcript3, proof.LabelsDigest)
+	}
 	h3, err := verifyRoundDigest(fs, 2, proof.Ctr[2], transcript3, proof.Digests[2], proof.Kappa[2])
 	if err != nil {
 		return false, false, false, fmt.Errorf("VerifyNIZK: FS round 2: %w", err)
@@ -208,6 +218,7 @@ func VerifyNIZK(proof *Proof) (okLin, okEq4, okSum bool, err error) {
 			rootBytes,
 			gammaBytes,
 			gammaPrimeBytes,
+			bytesFromKScalarMat(proof.GammaAggK),
 			bytesFromUint64Matrix(proof.KPoint),
 			bytesFromUint64Matrix(coeffMatrix),
 			bytesFromUint64Matrix(barSets),
@@ -241,8 +252,24 @@ func VerifyNIZK(proof *Proof) (okLin, okEq4, okSum bool, err error) {
 			bytesFromUint64Matrix(vTargets),
 		}
 	}
-	h4, err := verifyRoundDigest(fs, 3, proof.Ctr[3], transcript4, proof.Digests[3], proof.Kappa[3])
+	transcriptForRound3 := transcript4
+	if len(proof.TailTranscript) > 0 {
+		transcriptForRound3 = [][]byte{proof.TailTranscript}
+	}
+	h4, err := verifyRoundDigest(fs, 3, proof.Ctr[3], transcriptForRound3, proof.Digests[3], proof.Kappa[3])
 	if err != nil {
+		if proof.Theta > 1 {
+			material := append([]byte{}, fs.salt...)
+			for _, m := range transcriptForRound3 {
+				material = append(material, m...)
+			}
+			material = append(material, u64le(proof.Ctr[3])...)
+			exp := fs.xof.Expand(fs.labels[3], material)
+			fmt.Printf("[debug verify] round3 exp digest (len=%d) ctr=%d match=%v\n", len(exp), proof.Ctr[3], bytes.Equal(exp, proof.Digests[3]))
+			if len(exp) >= 8 && len(proof.Digests[3]) >= 8 {
+				fmt.Printf("[debug verify] digests: expected(prefix)=%x proof(prefix)=%x material_len=%d kappa=%d\n", exp[:8], proof.Digests[3][:8], len(material), proof.Kappa[3])
+			}
+		}
 		return false, false, false, fmt.Errorf("VerifyNIZK: FS round 3: %w", err)
 	}
 	seed4 := h4

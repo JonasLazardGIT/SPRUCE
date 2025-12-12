@@ -3,8 +3,36 @@ package PIOP
 import (
 	"fmt"
 
+	"vSIS-Signature/credential"
+
 	"github.com/tuneinsight/lattigo/v4/ring"
 )
+
+// BuildBoundConstraints scans the supplied polys (coeff domain) and fails if any
+// coefficient exceeds |bound|. It is a lightweight helper so credential/PACS
+// builders can reuse a consistent bound check without duplicating code.
+func BuildBoundConstraints(polys []*ring.Poly, bound int64) error {
+	if bound <= 0 {
+		return fmt.Errorf("invalid bound %d", bound)
+	}
+	for idx, p := range polys {
+		if p == nil {
+			return fmt.Errorf("nil poly at %d", idx)
+		}
+		for _, c := range p.Coeffs[0] {
+			cv := int64(c)
+			// Interpret coefficients in [-q/2, q/2] style: if it exceeds bound,
+			// reject. This matches PACS' notion of boundedness.
+			if cv > bound && cv < 1<<62 {
+				return fmt.Errorf("bound exceeded at poly %d", idx)
+			}
+			if cv < 0 && -cv > bound {
+				return fmt.Errorf("bound exceeded at poly %d", idx)
+			}
+		}
+	}
+	return nil
+}
 
 // BuildCommitConstraints builds residual polys for Ac·vec - Com. All inputs
 // must be in the same domain (NTT). Returns one poly per row of Ac.
@@ -41,23 +69,49 @@ func BuildCommitConstraints(ringQ *ring.Ring, Ac [][]*ring.Poly, vec []*ring.Pol
 	return residuals, nil
 }
 
-// BuildCenterConstraints returns residual polys ru+ri-r. Inputs are expected in
-// NTT domain; the caller should recenter externally. Bound is unused here; it
-// is kept for future modular-wrap gadgets.
-func BuildCenterConstraints(ringQ *ring.Ring, _ int64, ru []*ring.Poly, ri []*ring.Poly, r []*ring.Poly) ([]*ring.Poly, error) {
+// BuildCenterConstraints returns residual polys center(RU+RI) - R. Inputs are
+// expected in NTT domain; this helper converts to coeff, recenters using
+// credential.CenterBounded, lifts back to NTT, and returns residuals.
+func BuildCenterConstraints(ringQ *ring.Ring, bound int64, ru []*ring.Poly, ri []*ring.Poly, r []*ring.Poly) ([]*ring.Poly, error) {
 	if ringQ == nil {
 		return nil, fmt.Errorf("nil ring")
 	}
 	if len(ru) != len(ri) || len(ru) != len(r) {
 		return nil, fmt.Errorf("length mismatch ru=%d ri=%d r=%d", len(ru), len(ri), len(r))
 	}
+	q := int64(ringQ.Modulus[0])
+	half := q / 2
+	toCoeff := func(p *ring.Poly) *ring.Poly {
+		cp := ringQ.NewPoly()
+		ring.Copy(p, cp)
+		ringQ.InvNTT(cp, cp)
+		return cp
+	}
 	res := make([]*ring.Poly, len(ru))
-	tmp := ringQ.NewPoly()
 	for i := range ru {
-		acc := ringQ.NewPoly()
-		ringQ.Add(ru[i], ri[i], acc)
-		ringQ.Sub(acc, r[i], tmp)
-		res[i] = tmp.CopyNew()
+		ruC := toCoeff(ru[i])
+		riC := toCoeff(ri[i])
+		out := ringQ.NewPoly()
+		for idx := 0; idx < ringQ.N; idx++ {
+			auv := int64(ruC.Coeffs[0][idx])
+			bv := int64(riC.Coeffs[0][idx])
+			if auv > half {
+				auv -= q
+			}
+			if bv > half {
+				bv -= q
+			}
+			cv := credential.CenterBounded(auv+bv, bound)
+			if cv < 0 {
+				out.Coeffs[0][idx] = uint64(cv + q)
+			} else {
+				out.Coeffs[0][idx] = uint64(cv)
+			}
+		}
+		ringQ.NTT(out, out)
+		diff := ringQ.NewPoly()
+		ringQ.Sub(out, r[i], diff)
+		res[i] = diff
 	}
 	return res, nil
 }
