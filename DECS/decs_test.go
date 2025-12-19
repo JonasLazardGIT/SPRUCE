@@ -48,8 +48,8 @@ func TestDECS_CommitEval_Accepts(t *testing.T) {
 		t.Fatal("VerifyCommit failed (should accept)")
 	}
 
-	mrand.Seed(time.Now().UnixNano())
-	perm := mrand.Perm(int(N))
+	rng := mrand.New(mrand.NewSource(time.Now().UnixNano()))
+	perm := rng.Perm(int(N))
 	E := make([]int, ell)
 	copy(E, perm[:ell])
 	open := prover.EvalOpen(E)
@@ -135,8 +135,8 @@ func TestDECS_Rejects_MalformedOpening(t *testing.T) {
 	Gamma := verifier.DeriveGamma(root)
 	R := prover.CommitStep2(Gamma)
 
-	mrand.Seed(time.Now().UnixNano())
-	perm := mrand.Perm(int(N))
+	rng := mrand.New(mrand.NewSource(time.Now().UnixNano()))
+	perm := rng.Perm(int(N))
 	E := make([]int, ell)
 	copy(E, perm[:ell])
 	open := prover.EvalOpen(E)

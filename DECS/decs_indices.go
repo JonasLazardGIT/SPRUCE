@@ -128,16 +128,3 @@ func unpackIndexAt(bits []byte, pos int) (int, bool) {
 	}
 	return value, true
 }
-
-func unpackIndices(bits []byte, count int) []int {
-	if count <= 0 {
-		return nil
-	}
-	out := make([]int, count)
-	for i := 0; i < count; i++ {
-		if v, ok := unpackIndexAt(bits, i); ok {
-			out[i] = v
-		}
-	}
-	return out
-}

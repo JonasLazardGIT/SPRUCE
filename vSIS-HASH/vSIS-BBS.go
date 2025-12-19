@@ -8,8 +8,8 @@
 //
 // Public API
 //
-//  - GenerateB (samples B in coefficient domain; caller may NTT)
-//  - ComputeBBSHash (exact, returns NTT-domain result)
+//   - GenerateB (samples B in coefficient domain; caller may NTT)
+//   - ComputeBBSHash (exact, returns NTT-domain result)
 //
 // Note: ComputeBBSHash NTT-lifts m/x0/x1 in place. Callers that need the
 // original operands should pass copies.

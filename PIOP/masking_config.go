@@ -43,10 +43,11 @@ func deriveMaskingConfig(ringQ *ring.Ring, opts SimOpts, fparAll, faggAll []*rin
 	}
 	if aggDeg < 0 {
 		if len(faggAll) == 0 {
+			aggDeg = 0 // allow pure Fpar statements
+		} else {
 			err = fmt.Errorf("empty constraint lists")
 			return
 		}
-		aggDeg = 0
 	}
 	// Compute dQ if not overridden.
 	if cfg.DQ <= 0 {

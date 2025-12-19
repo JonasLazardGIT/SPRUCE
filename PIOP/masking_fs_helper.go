@@ -35,6 +35,27 @@ func decodeUint64Slice(b []byte) []uint64 {
 	return out
 }
 
+// evalRowsAt evaluates a slice of polys (NTT or coeff) at given points in F_q.
+func evalRowsAt(r *ring.Ring, polys []*ring.Poly, points []uint64) [][]uint64 {
+	if r == nil {
+		return nil
+	}
+	out := make([][]uint64, len(polys))
+	for i, p := range polys {
+		if p == nil {
+			continue
+		}
+		coeff := r.NewPoly()
+		r.InvNTT(p, coeff)
+		row := make([]uint64, len(points))
+		for j, x := range points {
+			row[j] = evalAt(r, coeff, x)
+		}
+		out[i] = row
+	}
+	return out
+}
+
 // maskFSArgs carries all inputs needed to run the masking/Merkle/FS loop.
 // It mirrors the locals present in buildSimWith.
 type maskFSArgs struct {
@@ -102,8 +123,10 @@ type maskFSArgs struct {
 	oracleLayout    lvcs.OracleLayout
 	decsParams      decs.Params
 
-	// Optional small-field evals
-	smallFieldEvals []kf.Elem
+	labelsDigest []byte
+
+	// Optional ncols override (head length) for theta>1
+	ncolsOverride int
 }
 
 // maskFSOutput captures the artefacts produced by the masking/FS loop.
@@ -183,6 +206,9 @@ func runMaskFS(args maskFSArgs) (maskFSOutput, error) {
 		MaskRowOffset:   args.maskRowOffset,
 		MaskRowCount:    args.maskRowCount,
 		MaskDegreeBound: args.maskDegreeBound,
+		NColsUsed:       args.ncols,
+		OmegaTrunc:      append([]uint64(nil), args.omega...),
+		LabelsDigest:    append([]byte(nil), args.labelsDigest...),
 	}
 	if o.Theta > 1 {
 		proof.Chi = append([]uint64(nil), args.smallFieldChi...)
@@ -192,7 +218,11 @@ func runMaskFS(args maskFSArgs) (maskFSOutput, error) {
 	vrf := lvcs.NewVerifierWithParams(ringQ, len(args.rowInputs), args.decsParams, args.ncols)
 	vrf.Root = args.root
 	// Round 1: Gamma
-	round1 := fsRound(fs, proof, 0, "Gamma", args.root[:])
+	material0 := [][]byte{args.root[:]}
+	if len(args.labelsDigest) > 0 {
+		material0 = append(material0, args.labelsDigest)
+	}
+	round1 := fsRound(fs, proof, 0, "Gamma", material0...)
 	gammaRNG := round1.RNG
 	Gamma := sampleFSMatrix(o.Eta, len(args.rowInputs), q, gammaRNG)
 	gammaBytes := bytesFromUint64Matrix(Gamma)
@@ -206,6 +236,9 @@ func runMaskFS(args maskFSArgs) (maskFSOutput, error) {
 	totalParallel := len(args.FparAll)
 	totalAgg := len(args.FaggAll)
 	transcript2 := [][]byte{args.root[:], gammaBytes, polysToBytes(Rpolys)}
+	if len(args.labelsDigest) > 0 {
+		transcript2 = append(transcript2, args.labelsDigest)
+	}
 	if proof.Theta > 1 {
 		transcript2 = append(transcript2, encodeUint64Slice(proof.Chi), encodeUint64Slice(proof.Zeta))
 	}
@@ -242,11 +275,24 @@ func runMaskFS(args maskFSArgs) (maskFSOutput, error) {
 	out.rowLayout = args.rowLayout
 
 	// Masks and Q/QK generation (delegated, same logic as buildSimWith)
-	sumFpar := sumPolyList(ringQ, args.FparAll, args.omega)
-	sumFagg := sumPolyList(ringQ, args.FaggAll, args.omega)
 	if proof.Theta > 1 {
 		// Small-field branch
-		MK := BuildMaskPolynomialsK(ringQ, args.smallFieldK, args.rho, args.maskDegreeTarget, args.omega, GammaPrimeK, GammaAggK, sumFpar, sumFagg)
+		var MK []*KPoly
+		if args.opts.Credential {
+			// Credential mode: use independent masks that already have ΣΩ=0 so that
+			// non-zero residuals propagate to QK sums and are caught by the verifier.
+			MK = args.independentMasksK
+			if len(MK) < args.rho {
+				MK = SampleIndependentMaskPolynomialsK(ringQ, args.smallFieldK, args.rho, args.maskDegreeTarget, args.omega)
+			} else {
+				MK = MK[:args.rho]
+			}
+		} else {
+			// PACS mode: keep the compensated masks so ΣΩ holds by construction.
+			sumFpar := sumPolyList(ringQ, args.FparAll, args.omega)
+			sumFagg := sumPolyList(ringQ, args.FaggAll, args.omega)
+			MK = BuildMaskPolynomialsK(ringQ, args.smallFieldK, args.rho, args.maskDegreeTarget, args.omega, GammaPrimeK, GammaAggK, sumFpar, sumFagg)
+		}
 		M := make([]*ring.Poly, args.rho)
 		for i := range MK {
 			poly := ringQ.NewPoly()
@@ -260,13 +306,16 @@ func runMaskFS(args maskFSArgs) (maskFSOutput, error) {
 		}
 		out.M = M
 		out.MK = MK
+		proof.MKData = snapshotKPolys(MK)
 		// Q and QK
 		qLayout := BuildQLayout{
 			WitnessPolys: args.w1[:args.origW1Len],
 			MaskPolys:    M,
 		}
 		out.Q = BuildQ(ringQ, qLayout, args.FparInt, args.FparNorm, args.FaggInt, args.FaggNorm, GammaPrime, GammaAgg)
+		proof.QNTT = polysToNTTMatrix(out.Q)
 		out.QK = BuildQK(ringQ, args.smallFieldK, MK, args.FparAll, args.FaggAll, GammaPrimeK, GammaAggK)
+		proof.QKData = snapshotKPolys(out.QK)
 		// Sanity check: QK should equal MK + Γ'·Fpar + γ'·Fagg coefficient-wise.
 		checkMismatch := false
 		for i := range out.QK {
@@ -336,6 +385,10 @@ func runMaskFS(args maskFSArgs) (maskFSOutput, error) {
 	if ellPrime <= 0 {
 		ellPrime = 1
 	}
+	// If caller provided an override for ncols (head length), enforce it for omega/rows/degree expectations.
+	if args.ncolsOverride > 0 && args.ncolsOverride < len(args.omega) {
+		args.omega = append([]uint64(nil), args.omega[:args.ncolsOverride]...)
+	}
 	gammaBytes = bytesFromUint64Matrix(Gamma)
 	gammaPrimeBytes := bytesFromUint64Matrix(GammaPrime)
 	gammaAggBytes := bytesFromUint64Matrix(GammaAgg)
@@ -344,6 +397,9 @@ func runMaskFS(args maskFSArgs) (maskFSOutput, error) {
 		gammaAggBytes = bytesFromKScalarMat(GammaAggK)
 	}
 	round3Material := [][]byte{args.root[:], gammaBytes, gammaPrimeBytes, gammaAggBytes, polysToBytes(out.Q)}
+	if len(args.labelsDigest) > 0 {
+		round3Material = append(round3Material, args.labelsDigest)
+	}
 	round3 := fsRound(fs, proof, 2, func() string {
 		if proof.Theta > 1 {
 			return "EvalKPoint"
@@ -437,8 +493,7 @@ func runMaskFS(args maskFSArgs) (maskFSOutput, error) {
 	if tailLen < args.ell {
 		return out, fmt.Errorf("insufficient tail: tailLen=%d ell=%d", tailLen, args.ell)
 	}
-	var transcript4 [][]byte
-	transcript4 = [][]byte{
+	transcript4 := [][]byte{
 		args.root[:],
 		gammaBytes,
 		bytesFromKScalarMat(GammaPrimeK),

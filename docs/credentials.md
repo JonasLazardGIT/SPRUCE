@@ -1,12 +1,6 @@
-# Credential Module Progress (Steps 1–3)
+# Credential Module Progress (Updated)
 
-This doc tracks the implemented pieces for the augmented issuance flow, aligned with **docs/Spruce-And-AC.pdf** §B.6 and the existing DECS/LVCS/PCS/PACS stack.
-
-## Current scope
-- Parameter loading for credential issuance (Ac, bounds, block lengths).
-- Core data structs for holder/challenge/transcript/credential.
-- Bound checking helpers.
-- Commitment builder using the public Ac matrix.
+This document captures the current state of the credential/issuance flow and the supporting PACS/PIOP wiring. It reflects the recent fixes (ΣΩ/masking) and the end-to-end issuance helpers.
 
 ## Files and APIs
 
@@ -24,10 +18,7 @@ This doc tracks the implemented pieces for the augmented issuance flow, aligned 
     "LenR": 1
   }
   ```
-  - `Ac` file format: `{"Ac": [ [ [coeffs...], [coeffs...] ], ... ]}` i.e. Ac[row][col][coeff], coeffs in coeff domain. Loader lifts to NTT.
-- `LoadParamsFromFile(path)` → `*credential.Params` with:
-  - `Ac commitment.Matrix` (NTT), `BPath`, `AcPath`, `BoundB`, block lengths, `RingQ`.
-  - Fallback search for files in `.`/`..`/`../..`.
+- `Ac` file format: `{"Ac": [ [ [coeffs...], [coeffs...] ], ... ]}` (rows × cols × coeffs, coeff domain). Loader lifts to NTT. Validates dimensions vs. `Len*`.
 - Ring source: `Parameters/Parameters.json` defaults (`n=1024`, `q=1038337`).
 
 ### Types (`credential/types.go`)
@@ -37,44 +28,62 @@ This doc tracks the implemented pieces for the augmented issuance flow, aligned 
 - `Credential { U []int64; M1, M2, R0, R1 []*ring.Poly; Com []*ring.Poly; BPath, AcPath string }`
 
 ### Bounds (`credential/bounds.go`)
-- `CheckBound(vec []*ring.Poly, bound int64, name string, ringQ *ring.Ring) error` – asserts all coeffs ∈ [-bound, bound] after centering.
+- `CheckBound(vec []*ring.Poly, bound int64, name string, ringQ *ring.Ring) error` – centers coeffs into `[-q/2,q/2]`, asserts ∈ [-bound, bound].
 - `CheckLengths(vec []*ring.Poly, want int, name string) error`.
 
 ### Commitment builder (`credential/commit.go`)
 - `BuildCommit(p *Params, h HolderState) (commitment.Vector, error)`:
-  - Validates lengths vs. `Len*`.
-  - Bound-checks all blocks with `BoundB`.
-  - Flattens `[m1||m2||rU0||rU1||r]` and calls `commitment.Commit`.
-  - Returns `com` (slice of polys).
+  - Validates lengths/bounds vs. `Len*`.
+  - Flattens `[m1||m2||rU0||rU1||r]`, lifts to NTT, calls `commitment.Commit`.
 
 ### Helpers (`credential/helpers.go`)
-- `CenterBounded`, `CombineRandomness`, `HashMessage` retained for later steps; `HashMessage` mirrors `PIOP/build_witness.go` → `vsishash.ComputeBBSHash` and returns centered `t`.
+- `CenterBounded/CombineRandomness`: center wrap into `[-B,B]` via modulus `2B+1`.
+- `HashMessage(ringQ, B, m1, m2, r0, r1) ([]int64, error)`: explicit `h_{m,(r0,r1)}(B)` (BBS) using coeff-domain inputs and B in NTT; returns centered coeffs for signing.
+- `LoadDefaultRing() (*ring.Ring, error)`: loads `Parameters/Parameters.json`.
 
 ### Issuer challenge (`credential/challenge.go`)
-- `NewIssuerChallenge(p *Params) (IssuerChallenge, error)`:
-  - Samples `RI0, RI1` with coeffs in `[-BoundB, BoundB]`, lifts to NTT.
-  - Uses `LenRU0/LenRU1` to size each slice.
+- `NewIssuerChallenge(p *Params) (IssuerChallenge, error)`: samples RI0/RI1 in `[-BoundB, BoundB]`, lifts to NTT; sizes from `LenRU0/LenRU1`.
 
 ### Target preparation (`credential/target.go`)
-- `ComputeCombinedTarget(p, holderState, challenge) (*CombinedTarget, error)`:
-  - Converts inputs from NTT to coeff domain.
-  - Computes `R0/R1 = center(RU* + RI*)` coeff-wise (bounded by `BoundB`).
-  - Loads `B` (NTT) from `BPath`, hashes to `T` via `HashMessage`.
-  - Restriction: only single-poly `m1`, `m2`, `r0`, `r1` are supported; length must be 1 for each (avoids multi-poly hashing for now).
+- `ComputeCombinedTarget`: coeff-side `R0/R1 = center(RU*+RI*)`, loads B, hashes to T; single-poly restriction for m1/m2/r0/r1.
 
-### Pre-sign proof scaffold (`PIOP/pre_sign.go`)
-- `ProvePreSign(p, holderState, challenge) -> PreSignProof`:
-  - Runs `BuildCommit` and `ComputeCombinedTarget`, returns `Com`, `R0`, `R1`, `T`.
-- `VerifyPreSign(p, holderState, challenge, proof) error`:
-  - Deterministically recomputes the same constraints (no ZK yet).
-- PIOP-side scaffold: `PIOP/pre_sign_augmented.go` exposes deterministic `ProvePreSignAugmented` / `VerifyPreSignAugmented` (Com + center combine; no hash constraint). The full PACS-style circuit is still TODO.
+### Issuance orchestration (`issuance/flow.go`)
+- Helpers to stitch Holder→Issuer (Spruce-And-AC §B.6):
+  - `PrepareCommit` → `Com = Ac·[m1||m2||RU0||RU1||R]` (NTT).
+  - `ApplyChallenge` → coeff-side `R0/R1`, carries `K0/K1`, loads B, computes `T = HashMessage`.
+  - `ProvePreSign` / `VerifyPreSign` → build/verify the pre-sign credential proof with publics `{Com, RI0, RI1, Ac, B, T, BoundB}` and witnesses `{M1, M2, RU0, RU1, R, R0, R1, K0, K1}`.
+  - `SignTargetAndSave` → signs `T` with stored NTRU trapdoor (`./ntru_keys`) via `signverify.SignTarget`, saves `signature.json`.
+- Recommended opts (match tests): `Theta=2, EllPrime=1, Rho=1, NCols=8, Ell=1, Credential=true`.
+
+## Credential PIOP (Pre-sign)
+
+- Witness rows (fixed order, single poly): `M1, M2, RU0, RU1, R, R0, R1, K0, K1`.
+  - `K0/K1` carry rows for center wrap (`RU+RI = R + (2B+1)·K`, K ∈ {-1,0,1}, bounded in-circuit).
+  - `T` is **public** (issuance target t).
+- Publics: `Com, RI0, RI1, Ac, B, T` (bound into FS via `BuildPublicLabels` + `LabelsDigest`).
+- Constraints (all F-par; F-agg may be empty):
+  - **Commit**: `Ac·[M1‖M2‖RU0‖RU1‖R] − Com = 0`
+  - **Center wrap**: `RU* + RI* − R* − (2B+1)·K* = 0` for *∈{0,1}
+  - **Hash (cleared denominator)**: `(B3 − R1) ⊙ T − (B0 + B1·(M1+M2) + B2·R0) = 0` (T public; no explicit denom-nonzero guard—abort-on-invertible assumed negligible)
+  - **Packing**: M1 zero on upper half, M2 zero on lower half (concatenation convention)
+  - **Bounds**: `P_B(row)=0` for all witness rows; `P_1(K*)=0` for carries; Go-side scan remains as precheck.
+- Verifier (θ>1): `VerifyNIZK` tolerates empty F-agg, replays FS with `LabelsDigest/OmegaTrunc/NColsUsed`, checks ΣΩ via `VerifyQK_QK`.
+
+### Masking / ΣΩ behavior
+- Credential mode uses **compensated masks (PACS style)** so ΣΩ sums to zero on valid inputs (matches SmallWood PACS). Tampering is caught via non-zero residual constraints (commit/center/hash/packing/bounds).
+- DEBUG: set `DEBUG_QK=1` to log non-zero QK evaluations when ΣΩ fails.
 
 ## Constants and defaults
 - Ring: `N=1024`, `q=1038337` (`Parameters/Parameters.json`).
 - B-matrix: `Parameters/Bmatrix.json`.
-- `BoundB`: currently read from params JSON; should match PIOP bound for message vectors (same bound used when checking message coordinates in PIOP). If unsure, set to the PIOP message bound (**MORE CONTEXT NEEDED** if different).
+- `BoundB`: from params JSON; should match PIOP bound for message vectors.
 
-## Notes / TODO for next steps
-- Define and publish canonical `Ac` JSON (coeff domain vs. NTT) and sample params file.
-- Target circuit and show circuit still to be implemented.
-- Norm bound for signer output `U` (currently signer uses β≈7054 from Parameters) and nonce domain for PRF tagging remain to be fixed (**MORE CONTEXT NEEDED**).
+## NTRU Signing CLIs (for signing T)
+- `cmd/ntru_sign`: sign explicit `t` (`-target` or derive from `-msg`), writes `./NTRU_Signature/signature.json`.
+- `cmd/ntrucli`: `gen/sign/verify` using stored keys in `./ntru_keys`.
+- Library: `signverify.SignTarget(tCoeffs, maxTrials, opts)` signs T with stored trapdoor.
+
+## Next steps
+- Post-sign (Holder→Verifier): add row `U`, constraint `A·U = T`, decide on binding to `Com/Ac`, PRF/tag gadget (PRF currently identity).
+- Optional: explicit nonzero-denominator guard for the hash if desired.
+- Ensure C compatibility test skips when BFile is invalid; otherwise all tests should be green.

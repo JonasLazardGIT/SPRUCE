@@ -18,10 +18,10 @@ type Params struct {
 // NewParams creates new parameters ensuring N is a power of two and Q > 0.
 func NewParams(N int, Q *big.Int) (Params, error) {
 	if N <= 0 || !isSmooth23(N) {
-		return Params{}, errors.New("N must be 2/3-smooth (only factors 2 and/or 3)")
+		return Params{}, errors.New("n must be 2/3-smooth (only factors 2 and/or 3)")
 	}
 	if Q == nil || Q.Sign() <= 0 {
-		return Params{}, errors.New("Q must be positive")
+		return Params{}, errors.New("q must be positive")
 	}
 	p := Params{N: N, Q: new(big.Int).Set(Q)}
 	// LOG3_D indicates presence of 3-adic factor in N (used by special conj2 at deg=2)

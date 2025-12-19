@@ -19,7 +19,7 @@ var (
 	cSmoothingErr  error
 )
 
-const defaultCSmoothing = 120 //1.32
+const defaultCSmoothing = 1.32
 
 func CReferenceSmoothing() float64 {
 	cSmoothingOnce.Do(func() {

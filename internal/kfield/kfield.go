@@ -348,25 +348,6 @@ func polyTrim(p poly, q uint64) poly {
 	return out
 }
 
-func polyAdd(a, b poly, q uint64) poly {
-	n := len(a)
-	if len(b) > n {
-		n = len(b)
-	}
-	out := make(poly, n)
-	for i := 0; i < n; i++ {
-		var ai, bi uint64
-		if i < len(a) {
-			ai = a[i]
-		}
-		if i < len(b) {
-			bi = b[i]
-		}
-		out[i] = modAdd(ai, bi, q)
-	}
-	return polyTrim(out, q)
-}
-
 func polySub(a, b poly, q uint64) poly {
 	n := len(a)
 	if len(b) > n {

@@ -30,6 +30,16 @@ func BuildPublicLabels(pub PublicInputs) []PublicLabel {
 		}
 		labels = append(labels, PublicLabel{Name: name, Data: buf.Bytes()})
 	}
+	appendInt64 := func(name string, vals []int64) {
+		if len(vals) == 0 {
+			return
+		}
+		b := make([]byte, 8*len(vals))
+		for i, v := range vals {
+			binary.LittleEndian.PutUint64(b[8*i:8*(i+1)], uint64(v))
+		}
+		labels = append(labels, PublicLabel{Name: name, Data: b})
+	}
 	if len(pub.Com) > 0 {
 		appendPoly("Com", pub.Com)
 	}
@@ -48,6 +58,9 @@ func BuildPublicLabels(pub PublicInputs) []PublicLabel {
 	}
 	if len(pub.B) > 0 {
 		appendPoly("B", pub.B)
+	}
+	if len(pub.T) > 0 {
+		appendInt64("T", pub.T)
 	}
 	if len(pub.U) > 0 {
 		appendPoly("U", pub.U)

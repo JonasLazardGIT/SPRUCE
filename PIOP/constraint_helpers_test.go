@@ -95,11 +95,11 @@ func TestBuildBoundConstraints(t *testing.T) {
 	r := tinyRing(t)
 	p := r.NewPoly()
 	p.Coeffs[0][0] = 3
-	if err := BuildBoundConstraints([]*ring.Poly{p}, 5); err != nil {
+	if err := BuildBoundConstraints(r, []*ring.Poly{p}, 5); err != nil {
 		t.Fatalf("expected within bound: %v", err)
 	}
 	p.Coeffs[0][0] = 7
-	if err := BuildBoundConstraints([]*ring.Poly{p}, 5); err == nil {
+	if err := BuildBoundConstraints(r, []*ring.Poly{p}, 5); err == nil {
 		t.Fatalf("expected bound violation")
 	}
 }

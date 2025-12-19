@@ -117,11 +117,11 @@ func LoadBMatrixCoeffs(path string) ([][]uint64, error) {
 		return nil, err
 	}
 	if len(tmp.B) != 4 {
-		return nil, fmt.Errorf("B has %d rows, want 4", len(tmp.B))
+		return nil, fmt.Errorf("b has %d rows, want 4", len(tmp.B))
 	}
 	for i := range tmp.B {
 		if len(tmp.B[i]) != 1024 {
-			return nil, fmt.Errorf("B[%d] has length %d, want 1024", i, len(tmp.B[i]))
+			return nil, fmt.Errorf("b[%d] has length %d, want 1024", i, len(tmp.B[i]))
 		}
 	}
 	return tmp.B, nil

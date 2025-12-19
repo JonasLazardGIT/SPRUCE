@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"math/big"
 	"os"
@@ -61,7 +60,7 @@ func main() {
 	var t ntru.ModQPoly
 	if *targetHex != "" {
 		// parse colon-separated hex coeffs or load file
-		if data, err := ioutil.ReadFile(*targetHex); err == nil {
+		if data, err := os.ReadFile(*targetHex); err == nil {
 			t = parsePolyHex(string(data), par)
 		} else {
 			t = parsePolyHex(*targetHex, par)
@@ -72,7 +71,7 @@ func main() {
 			b, _ := hex.DecodeString(strip0x(*msgPath))
 			msg = b
 		} else {
-			b, err := ioutil.ReadFile(*msgPath)
+			b, err := os.ReadFile(*msgPath)
 			if err != nil {
 				log.Fatal(err)
 			}

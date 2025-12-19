@@ -9,24 +9,31 @@ import (
 )
 
 // BuildBoundConstraints scans the supplied polys (coeff domain) and fails if any
-// coefficient exceeds |bound|. It is a lightweight helper so credential/PACS
-// builders can reuse a consistent bound check without duplicating code.
-func BuildBoundConstraints(polys []*ring.Poly, bound int64) error {
+// coefficient exceeds |bound| after centering into [-q/2, q/2]. It is a
+// lightweight helper so credential/PACS builders can reuse a consistent bound
+// check without duplicating code.
+func BuildBoundConstraints(ringQ *ring.Ring, polys []*ring.Poly, bound int64) error {
+	if ringQ == nil {
+		return fmt.Errorf("nil ring")
+	}
 	if bound <= 0 {
 		return fmt.Errorf("invalid bound %d", bound)
 	}
+	q := int64(ringQ.Modulus[0])
+	half := q / 2
 	for idx, p := range polys {
 		if p == nil {
 			return fmt.Errorf("nil poly at %d", idx)
 		}
 		for _, c := range p.Coeffs[0] {
 			cv := int64(c)
-			// Interpret coefficients in [-q/2, q/2] style: if it exceeds bound,
-			// reject. This matches PACS' notion of boundedness.
-			if cv > bound && cv < 1<<62 {
-				return fmt.Errorf("bound exceeded at poly %d", idx)
+			if cv > half {
+				cv -= q
 			}
-			if cv < 0 && -cv > bound {
+			if cv < -half {
+				cv += q
+			}
+			if cv > bound || cv < -bound {
 				return fmt.Errorf("bound exceeded at poly %d", idx)
 			}
 		}
@@ -127,10 +134,10 @@ func BuildSignatureConstraint(ringQ *ring.Ring, A [][]*ring.Poly, U []*ring.Poly
 	rows := len(A)
 	cols := len(A[0])
 	if len(U) != cols {
-		return nil, fmt.Errorf("U length mismatch: got %d want %d", len(U), cols)
+		return nil, fmt.Errorf("u length mismatch: got %d want %d", len(U), cols)
 	}
 	if len(T) != ringQ.N {
-		return nil, fmt.Errorf("T length mismatch: got %d want %d", len(T), ringQ.N)
+		return nil, fmt.Errorf("t length mismatch: got %d want %d", len(T), ringQ.N)
 	}
 	residuals := make([]*ring.Poly, rows)
 	tmp := ringQ.NewPoly()

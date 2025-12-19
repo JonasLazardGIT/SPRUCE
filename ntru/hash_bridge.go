@@ -1,17 +1,17 @@
 package ntru
 
 import (
-    "encoding/json"
-    "errors"
-    "fmt"
-    "os"
-    "path/filepath"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 
-    ntrurio "vSIS-Signature/ntru/io"
-    vsishash "vSIS-Signature/vSIS-HASH"
+	ntrurio "vSIS-Signature/ntru/io"
+	vsishash "vSIS-Signature/vSIS-HASH"
 
-    "github.com/tuneinsight/lattigo/v4/ring"
-    "github.com/tuneinsight/lattigo/v4/utils"
+	"github.com/tuneinsight/lattigo/v4/ring"
+	"github.com/tuneinsight/lattigo/v4/utils"
 )
 
 // ComputeTargetFromSeeds rebuilds the BBS hash target in coefficient domain
@@ -63,23 +63,23 @@ func ComputeTargetFromSeeds(pp *ntrurio.SystemParams, Bfile string, mSeed, x0See
 
 // loadBMatrix is a light copy of the helper used by signer/verifier.
 func loadBMatrix(path string, ringQ *ring.Ring) ([]*ring.Poly, error) {
-    type bjson struct {
-        B [][]uint64 `json:"B"`
-    }
-    raw, err := os.ReadFile(path)
-    if err != nil {
-        // Fallback one level up to support subdirectory test runs
-        if !filepath.IsAbs(path) {
-            raw, err = os.ReadFile(filepath.Join("..", path))
-        }
-        if err != nil {
-            return nil, err
-        }
-    }
-    var bj bjson
-    if err = json.Unmarshal(raw, &bj); err != nil {
-        return nil, err
-    }
+	type bjson struct {
+		B [][]uint64 `json:"B"`
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		// Fallback one level up to support subdirectory test runs
+		if !filepath.IsAbs(path) {
+			raw, err = os.ReadFile(filepath.Join("..", path))
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	var bj bjson
+	if err = json.Unmarshal(raw, &bj); err != nil {
+		return nil, err
+	}
 	if len(bj.B) != 4 {
 		return nil, fmt.Errorf("expected 4 polys in B, got %d", len(bj.B))
 	}

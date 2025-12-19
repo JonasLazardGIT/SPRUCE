@@ -17,8 +17,6 @@ package PIOP
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	mrand "math/rand"
 	"reflect"
@@ -33,17 +31,6 @@ import (
 )
 
 const linfChainTestQ = uint64(1038337)
-
-// --------------------------------------------------------------------------
-// transcript – printed once at the end so humans can diff two runs quickly.
-// --------------------------------------------------------------------------
-type transcript struct {
-	Root                string
-	Gamma0, GammaPrime0 [][]uint64
-	Rhash               string
-	E                   []int // indices opened through DECS
-	Flags               struct{ Merkle, Deg, LinMap, Eq4, Sum bool }
-}
 
 func bumpAt(r *ring.Ring, p *ring.Poly, idx int, q uint64) {
 	tmp := r.NewPoly()
@@ -136,61 +123,6 @@ func assertMaskRowsMatch(t *testing.T, ctx *simCtx) {
 	}
 }
 
-func assertPolySlicesEqual(t *testing.T, ringQ *ring.Ring, name string, want, got []*ring.Poly) {
-	t.Helper()
-	if len(want) != len(got) {
-		t.Fatalf("%s length mismatch: got %d want %d", name, len(got), len(want))
-	}
-	for i := range want {
-		if !ringQ.Equal(want[i], got[i]) {
-			t.Fatalf("%s[%d] mismatch", name, i)
-		}
-	}
-}
-
-type proofDigest map[string]string
-
-func proofSnapshotDigest(ps ProofSnapshot) proofDigest {
-	d := proofDigest{
-		"Lambda":          hashValue(ps.Lambda),
-		"Theta":           hashValue(ps.Theta),
-		"RowLayout":       hashValue(ps.RowLayout),
-		"MaskRowOffset":   hashValue(ps.MaskRowOffset),
-		"MaskRowCount":    hashValue(ps.MaskRowCount),
-		"MaskDegreeBound": hashValue(ps.MaskDegreeBound),
-		"FparNTT":         hashValue(ps.FparNTT),
-		"FaggNTT":         hashValue(ps.FaggNTT),
-		"QNTT":            hashValue(ps.QNTT),
-		"R":               hashValue(ps.R),
-	}
-	return d
-}
-
-func hashValue(v interface{}) string {
-	h := sha256.Sum256([]byte(fmt.Sprintf("%#v", v)))
-	return hex.EncodeToString(h[:])
-}
-
-func compareProofDigest(t *testing.T, legacy, merged proofDigest, expectedDiff map[string]bool) {
-	t.Helper()
-	actualDiff := make(map[string]bool, len(legacy))
-	for key, legacyHash := range legacy {
-		mergedHash, ok := merged[key]
-		if !ok {
-			t.Fatalf("proof digest missing key %q in merged snapshot", key)
-		}
-		actualDiff[key] = legacyHash != mergedHash
-	}
-	for key := range merged {
-		if _, ok := legacy[key]; !ok {
-			t.Fatalf("proof digest missing key %q in legacy snapshot", key)
-		}
-	}
-	if !reflect.DeepEqual(actualDiff, expectedDiff) {
-		t.Fatalf("unexpected proof delta: got %+v want %+v", actualDiff, expectedDiff)
-	}
-}
-
 func assertMaskInvariants(t *testing.T, ctx *simCtx) {
 	t.Helper()
 	if ctx == nil {
@@ -238,20 +170,6 @@ func assertMaskInvariants(t *testing.T, ctx *simCtx) {
 			t.Fatalf("independent K-mask %d degree %d exceeds bound %d", i, kp.Degree, ctx.maskDegreeBound)
 		}
 	}
-}
-
-func extractChainDecomp(spec LinfSpec, base int, count int, w1 []*ring.Poly) ChainDecomp {
-	chainRowsPer := 1 + spec.L
-	out := ChainDecomp{M: make([]*ring.Poly, count), D: make([][]*ring.Poly, count)}
-	for row := 0; row < count; row++ {
-		rowBase := base + row*chainRowsPer
-		out.M[row] = w1[rowBase]
-		out.D[row] = make([]*ring.Poly, spec.L)
-		for digit := 0; digit < spec.L; digit++ {
-			out.D[row][digit] = w1[rowBase+1+digit]
-		}
-	}
-	return out
 }
 
 func deepCopyOpen(o *decs.DECSOpening) *decs.DECSOpening {

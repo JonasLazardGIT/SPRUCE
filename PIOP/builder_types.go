@@ -24,7 +24,11 @@ type WitnessInputs struct {
 	R   []*ring.Poly
 	R0  []*ring.Poly
 	R1  []*ring.Poly
-	U   []*ring.Poly
+	// K0/K1 are carry rows for the paper-faithful center wrap:
+	// RU* + RI* = R* + (2B+1)·K* with K* ∈ {-1,0,1}.
+	K0 []*ring.Poly
+	K1 []*ring.Poly
+	U  []*ring.Poly
 	// T can be kept internal (hash output) when not exposed as public.
 	T      []int64
 	Extras map[string]interface{}

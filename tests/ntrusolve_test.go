@@ -9,7 +9,7 @@ import (
 func TestNTRUSolve(t *testing.T) {
 	par := quickParamsNQ()
 	// Use a realistic small trapdoor
-	f, g, F, G := genTrapdoorKey(t, par, 1.2)
+	f, g, _, _ := genTrapdoorKey(t, par, 1.2)
 	// Default now uses the C-style tower+Babai solver, no need to set UseCTower.
 	opts := ntru.SolveOpts{Prec: 128, Reduce: true, MaxIters: 3}
 	F, G, err := ntru.NTRUSolve(f, g, par, opts)

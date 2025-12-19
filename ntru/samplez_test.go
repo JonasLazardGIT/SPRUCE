@@ -2,7 +2,6 @@ package ntru
 
 import (
 	"math"
-	"math/rand"
 	"testing"
 
 	ps "vSIS-Signature/Preimage_Sampler"
@@ -23,7 +22,6 @@ func TestSampleZVecStatistics(t *testing.T) {
 	m2 := 0.0
 	count := 0
 	for seed := int64(0); seed < 8; seed++ {
-		rand.Seed(0x12345678 + seed)
 		for i := 0; i < trials; i++ {
 			coeff.Coeffs[0].Real.SetFloat64(0)
 			coeff.Coeffs[0].Imag.SetFloat64(0)
@@ -53,7 +51,6 @@ func TestSampleZVecStatistics(t *testing.T) {
 	m2 = 0.0
 	count = 0
 	for seed := int64(0); seed < 8; seed++ {
-		rand.Seed(0x98765432 + seed)
 		for i := 0; i < trials; i++ {
 			samples, err := sampleZVec(coeff, sigma)
 			if err != nil {

@@ -1047,32 +1047,6 @@ func (b *BigComplex) ToComplex() complex128 {
 	return complex(r, i)
 }
 
-// Twiddle cache (float64) to avoid repeated trig calls in mixed 2/3 FFT.
-var twiddleCache = make(map[int]struct {
-	fwd []complex128
-	inv []complex128
-})
-
-func getTwiddlesFloat(L int, sign int) []complex128 {
-	ent, ok := twiddleCache[L]
-	if !ok {
-		fwd := make([]complex128, L)
-		inv := make([]complex128, L)
-		for k := 0; k < L; k++ {
-			theta := 2 * math.Pi * float64(k) / float64(L)
-			c := complex(math.Cos(theta), math.Sin(theta))
-			inv[k] = c                          // +iθ
-			fwd[k] = complex(real(c), -imag(c)) // −iθ
-		}
-		ent = struct{ fwd, inv []complex128 }{fwd: fwd, inv: inv}
-		twiddleCache[L] = ent
-	}
-	if sign >= 0 {
-		return ent.inv
-	}
-	return ent.fwd
-}
-
 // SetCoeffs copies the coefficients from src into e and returns e.
 // Panics if dimensions do not match.
 func (e *CyclotomicFieldElem) SetCoeffs(src *CyclotomicFieldElem) *CyclotomicFieldElem {

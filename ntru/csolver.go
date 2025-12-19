@@ -19,7 +19,7 @@ func ntruCSolveTowerBabai(f, g []int64, par Params, opts SolveOpts) (F, G []int6
 		return nil, nil, errors.New("dimension mismatch")
 	}
 	if (par.N & (par.N - 1)) != 0 {
-		return nil, nil, fmt.Errorf("N must be power of two for tower solver, got %d", par.N)
+		return nil, nil, fmt.Errorf("n must be power of two for tower solver, got %d", par.N)
 	}
 	// Convert to big.Int slices
 	fb := make([]*big.Int, par.N)
@@ -472,29 +472,6 @@ func bigSliceToInt64(p []*big.Int) ([]int64, bool) {
 		out[i] = p[i].Int64()
 	}
 	return out, true
-}
-
-func maxAbs64(s []int64) int64 {
-	var m int64
-	for _, v := range s {
-		if v < 0 {
-			v = -v
-		}
-		if v > m {
-			m = v
-		}
-	}
-	return m
-}
-
-func nonZeroCount(s []int64) int {
-	c := 0
-	for _, v := range s {
-		if v != 0 {
-			c++
-		}
-	}
-	return c
 }
 
 func bitlenMaxAbs(s []int64) int {

@@ -3,8 +3,8 @@ package tests
 import (
 	"testing"
 
-	PIOP "vSIS-Signature/PIOP"
 	"github.com/tuneinsight/lattigo/v4/ring"
+	PIOP "vSIS-Signature/PIOP"
 )
 
 func TestBuildPublicLabelsOrder(t *testing.T) {

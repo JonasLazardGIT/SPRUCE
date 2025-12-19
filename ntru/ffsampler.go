@@ -608,7 +608,7 @@ func fieldSlice(e *ps.CyclotomicFieldElem, limit int) []complex128 {
 // samplePairCExactTrace mirrors the two-step sampler and returns norms before/after each Babai step.
 func (S *Sampler) samplePairCExactTrace(c0, c1 *ps.CyclotomicFieldElem) (z0, z1 []int64, trace SampleTrace, err error) {
 	if S.beta10 == nil || S.beta11 == nil || S.beta21 == nil || S.b20 == nil || S.b21 == nil || len(S.norm1) == 0 || len(S.norm2) == 0 {
-		err = errors.New("C-style sampler not initialized: call BuildGram first")
+		err = errors.New("c-style sampler not initialized: call BuildGram first")
 		return
 	}
 	N := S.Par.N

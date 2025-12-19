@@ -130,19 +130,19 @@ func loadAc(path string, ringQ *ring.Ring) (commitment.Matrix, error) {
 		return nil, fmt.Errorf("parse Ac: %w", err)
 	}
 	if len(aj.Ac) == 0 {
-		return nil, fmt.Errorf("Ac: empty matrix")
+		return nil, fmt.Errorf("ac: empty matrix")
 	}
 	rows := len(aj.Ac)
 	cols := len(aj.Ac[0])
 	mat := make(commitment.Matrix, rows)
 	for i := 0; i < rows; i++ {
 		if len(aj.Ac[i]) != cols {
-			return nil, fmt.Errorf("Ac: ragged row %d", i)
+			return nil, fmt.Errorf("ac: ragged row %d", i)
 		}
 		mat[i] = make([]*ring.Poly, cols)
 		for j := 0; j < cols; j++ {
 			if len(aj.Ac[i][j]) != ringQ.N {
-				return nil, fmt.Errorf("Ac: row %d col %d len=%d want=%d", i, j, len(aj.Ac[i][j]), ringQ.N)
+				return nil, fmt.Errorf("ac: row %d col %d len=%d want=%d", i, j, len(aj.Ac[i][j]), ringQ.N)
 			}
 			p := ringQ.NewPoly()
 			copy(p.Coeffs[0], aj.Ac[i][j])

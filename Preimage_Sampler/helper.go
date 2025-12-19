@@ -8,39 +8,6 @@ import (
 	"github.com/tuneinsight/lattigo/v4/ring"
 )
 
-// baseDigits decomposes v (which may be negative) into k little-endian
-// base-t digits, each in [0,base).
-func baseDigits(v int64, base int64, k int) []int64 {
-	digits := make([]int64, k)
-	temp := v
-	for i := 0; i < k; i++ {
-		r := temp % base
-		if r < 0 {
-			r += base
-		}
-		digits[i] = r
-		// now subtract it off and divide
-		temp = (temp - r) / base
-	}
-	return digits
-}
-
-// balancedDigits returns centered base-t digits (least significant first)
-// in [-(base/2), ..., +((base-1)/2)] that still sum to v.
-func balancedDigits(v int64, base int64, k int) []int64 {
-	raw := baseDigits(v, base, k)
-	half := base / 2
-	for i := 0; i < k; i++ {
-		if raw[i] > half {
-			raw[i] -= base
-			if i+1 < k {
-				raw[i+1] += 1
-			}
-		}
-	}
-	return raw
-}
-
 func AutomorphismTranspose(r *ring.Ring, p *ring.Poly) *ring.Poly {
 	N := r.N
 	result := r.NewPoly()

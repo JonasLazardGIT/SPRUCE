@@ -29,22 +29,22 @@ func validatePublics(pub PublicInputs) error {
 	}
 	// B may contain 4 polynomials (B0..B3) for the hash gadget.
 	if len(pub.B) != 0 && len(pub.B) != 1 && len(pub.B) != 4 {
-		return fmt.Errorf("B: expected 1 or 4 polys, got %d", len(pub.B))
+		return fmt.Errorf("b: expected 1 or 4 polys, got %d", len(pub.B))
 	}
 	// BoundB is only required when running credential mode; builders enforce >0 when needed.
 	// Com and Ac can have multiple rows; ensure consistent shape if present.
 	if len(pub.Ac) > 0 {
 		rowLen := len(pub.Ac[0])
 		if rowLen == 0 {
-			return fmt.Errorf("Ac: empty first row")
+			return fmt.Errorf("ac: empty first row")
 		}
 		for i, row := range pub.Ac {
 			if len(row) != rowLen {
-				return fmt.Errorf("Ac: ragged row %d", i)
+				return fmt.Errorf("ac: ragged row %d", i)
 			}
 		}
 		if len(pub.Com) > 0 && len(pub.Com) != len(pub.Ac) {
-			return fmt.Errorf("Com length %d mismatches Ac rows %d", len(pub.Com), len(pub.Ac))
+			return fmt.Errorf("com length %d mismatches ac rows %d", len(pub.Com), len(pub.Ac))
 		}
 	}
 	return nil
@@ -83,6 +83,16 @@ func validateWitnesses(wit WitnessInputs) error {
 	}
 	if len(wit.R1) > 0 {
 		if err := checkOne("R1", wit.R1); err != nil {
+			return err
+		}
+	}
+	// If the centered randomness rows are provided, require the corresponding
+	// carry rows (paper-faithful center wrap uses RU+RI = R + (2B+1)·K).
+	if len(wit.R0) > 0 || len(wit.R1) > 0 {
+		if err := checkOne("K0", wit.K0); err != nil {
+			return err
+		}
+		if err := checkOne("K1", wit.K1); err != nil {
 			return err
 		}
 	}

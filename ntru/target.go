@@ -14,7 +14,7 @@ func CenterModQToInt64(a ModQPoly, par Params) ([]int64, error) {
 		return nil, errors.New("dimension mismatch")
 	}
 	if !par.Q.IsInt64() {
-		return nil, errors.New("Q does not fit into int64")
+		return nil, errors.New("q does not fit into int64")
 	}
 	halfUp := new(big.Int).Rsh(par.Q, 1)
 	out := make([]int64, par.N)

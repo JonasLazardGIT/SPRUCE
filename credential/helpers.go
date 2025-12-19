@@ -45,7 +45,7 @@ func HashMessage(
 		return nil, fmt.Errorf("nil ring")
 	}
 	if len(B) != 4 {
-		return nil, fmt.Errorf("B must contain 4 polynomials, got %d", len(B))
+		return nil, fmt.Errorf("b must contain 4 polynomials, got %d", len(B))
 	}
 	if m1 == nil || m2 == nil || r0 == nil || r1 == nil {
 		return nil, fmt.Errorf("nil input polynomial")

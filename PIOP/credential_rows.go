@@ -9,8 +9,10 @@ import (
 	"github.com/tuneinsight/lattigo/v4/ring"
 )
 
-// buildCredentialRows maps WitnessInputs into an ordered row list for credential mode
-// (pre-sign: 8 rows; post-sign: 9 rows with U). It returns the row polynomials,
+// buildCredentialRows maps WitnessInputs into an ordered row list for credential mode.
+// Pre-sign uses 7 witness rows (M1,M2,RU0,RU1,R,R0,R1); post-sign may add U (and
+// legacy callers may still provide an internal T row via wit.T).
+// It returns the row polynomials,
 // LVCS row inputs (heads), a basic RowLayout, decs params, and mask layout offsets.
 func buildCredentialRows(ringQ *ring.Ring, wit WitnessInputs, opts SimOpts) (rows []*ring.Poly, rowInputs []lvcs.RowInput, layout RowLayout, decsParams decs.Params, maskRowOffset, maskRowCount, witnessCount, ncols int, err error) {
 	if ringQ == nil {
@@ -47,6 +49,12 @@ func buildCredentialRows(ringQ *ring.Ring, wit WitnessInputs, opts SimOpts) (row
 	if err = require(wit.R1, "R1"); err != nil {
 		return
 	}
+	if err = require(wit.K0, "K0"); err != nil {
+		return
+	}
+	if err = require(wit.K1, "K1"); err != nil {
+		return
+	}
 
 	rows = []*ring.Poly{
 		wit.M1[0],
@@ -56,22 +64,29 @@ func buildCredentialRows(ringQ *ring.Ring, wit WitnessInputs, opts SimOpts) (row
 		wit.R[0],
 		wit.R0[0],
 		wit.R1[0],
+		wit.K0[0],
+		wit.K1[0],
 	}
-	// Always expect T as internal witness (hash output).
-	if len(wit.T) == 0 {
-		err = fmt.Errorf("missing T witness (hash output)")
-		return
+	// Legacy: some callers still provide T as an internal witness (hash output).
+	// Paper-faithful pre-sign issuance treats T/t as public, so new callers should
+	// omit wit.T and provide pub.T instead.
+	if len(wit.T) > 0 {
+		// T is provided as coeff slice; lift to polynomial.
+		tPoly := ringQ.NewPoly()
+		if len(wit.T) > len(tPoly.Coeffs[0]) {
+			err = fmt.Errorf("t length %d exceeds ring dimension %d", len(wit.T), len(tPoly.Coeffs[0]))
+			return
+		}
+		q := int64(ringQ.Modulus[0])
+		for i := range wit.T {
+			v := wit.T[i] % q
+			if v < 0 {
+				v += q
+			}
+			tPoly.Coeffs[0][i] = uint64(v)
+		}
+		rows = append(rows, tPoly)
 	}
-	// T is provided as coeff slice; lift to polynomial.
-	tPoly := ringQ.NewPoly()
-	if len(wit.T) > len(tPoly.Coeffs[0]) {
-		err = fmt.Errorf("T length %d exceeds ring dimension %d", len(wit.T), len(tPoly.Coeffs[0]))
-		return
-	}
-	for i := range wit.T {
-		tPoly.Coeffs[0][i] = uint64(int64(wit.T[i]) % int64(ringQ.Modulus[0]))
-	}
-	rows = append(rows, tPoly)
 
 	// Post-signature: include U if provided.
 	if len(wit.U) > 0 {

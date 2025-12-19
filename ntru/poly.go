@@ -131,22 +131,22 @@ func (p ModQPoly) Lift() IntPoly {
 
 // ToRNS converts a ModQPoly to RNS limb polynomials.
 func ToRNS(p ModQPoly, params Params) []*ring.Poly {
-    rings, _ := params.BuildRings()
-    limbs := make([]*ring.Poly, len(rings))
-    for i, r := range rings {
-        pl := r.NewPoly()
-        var mod *big.Int
-        if len(params.Qi) > 0 {
-            mod = new(big.Int).SetUint64(params.Qi[i])
-        } else {
-            // fallback: use ring modulus if no RNS factorization provided
-            mod = new(big.Int).SetUint64(r.Modulus[0])
-        }
-        for j, c := range p.Coeffs {
-            pl.Coeffs[0][j] = new(big.Int).Mod(c, mod).Uint64()
-        }
-        limbs[i] = pl
-    }
+	rings, _ := params.BuildRings()
+	limbs := make([]*ring.Poly, len(rings))
+	for i, r := range rings {
+		pl := r.NewPoly()
+		var mod *big.Int
+		if len(params.Qi) > 0 {
+			mod = new(big.Int).SetUint64(params.Qi[i])
+		} else {
+			// fallback: use ring modulus if no RNS factorization provided
+			mod = new(big.Int).SetUint64(r.Modulus[0])
+		}
+		for j, c := range p.Coeffs {
+			pl.Coeffs[0][j] = new(big.Int).Mod(c, mod).Uint64()
+		}
+		limbs[i] = pl
+	}
 	return limbs
 }
 

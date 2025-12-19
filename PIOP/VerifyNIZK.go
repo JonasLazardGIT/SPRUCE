@@ -54,6 +54,9 @@ func VerifyNIZK(proof *Proof) (okLin, okEq4, okSum bool, err error) {
 	}
 	q := ringQ.Modulus[0]
 	ncols := len(vTargets[0])
+	if proof.NColsUsed > 0 {
+		ncols = proof.NColsUsed
+	}
 
 	// Derive Ω as in the prover.
 	px := ringQ.NewPoly()
@@ -63,10 +66,16 @@ func VerifyNIZK(proof *Proof) (okLin, okEq4, okSum bool, err error) {
 	px.Coeffs[0][1] = 1
 	pts := ringQ.NewPoly()
 	ringQ.NTT(px, pts)
-	if len(pts.Coeffs[0]) < ncols {
-		return false, false, false, errors.New("VerifyNIZK: Ω exceeds ring dimension")
+	var omega []uint64
+	if len(proof.OmegaTrunc) > 0 {
+		omega = append([]uint64(nil), proof.OmegaTrunc...)
+		ncols = len(omega)
+	} else {
+		if len(pts.Coeffs[0]) < ncols {
+			return false, false, false, errors.New("VerifyNIZK: Ω exceeds ring dimension")
+		}
+		omega = append([]uint64(nil), pts.Coeffs[0][:ncols]...)
 	}
-	omega := append([]uint64(nil), pts.Coeffs[0][:ncols]...)
 	if err := checkOmega(omega, q); err != nil {
 		return false, false, false, fmt.Errorf("VerifyNIZK: invalid Ω: %w", err)
 	}
@@ -137,14 +146,22 @@ func VerifyNIZK(proof *Proof) (okLin, okEq4, okSum bool, err error) {
 	}
 	seed2 := h2
 
+	if len(proof.FparNTT) == 0 || len(proof.QNTT) == 0 {
+		return false, false, false, errors.New("VerifyNIZK: missing Eq.(4) polynomial data")
+	}
+	FparPolys := nttMatrixToPolys(ringQ, proof.FparNTT)
+	FaggPolys := nttMatrixToPolys(ringQ, proof.FaggNTT)
+	QPolys := nttMatrixToPolys(ringQ, proof.QNTT)
+	totalAgg := len(FaggPolys)
+
 	var (
 		gammaPrimeBytes []byte
 		gammaAggBytes   []byte
 	)
 
 	if proof.Theta > 1 {
-		if len(proof.GammaPrimeK) == 0 || len(proof.GammaAggK) == 0 {
-			return false, false, false, errors.New("VerifyNIZK: missing GammaPrimeK/GammaAggK for θ>1")
+		if len(proof.GammaPrimeK) == 0 {
+			return false, false, false, errors.New("VerifyNIZK: missing GammaPrimeK for θ>1")
 		}
 		rows := len(proof.GammaPrimeK)
 		cols := len(proof.GammaPrimeK[0])
@@ -152,18 +169,20 @@ func VerifyNIZK(proof *Proof) (okLin, okEq4, okSum bool, err error) {
 		if !kMatrixEqual(fsGammaPrime, proof.GammaPrimeK) {
 			return false, false, false, errors.New("VerifyNIZK: GammaPrimeK mismatch")
 		}
-		fsGammaAgg := sampleFSVectorK(len(proof.GammaAggK), len(proof.GammaAggK[0]), proof.Theta, q, newFSRNG("GammaPrimeAgg", seed2, []byte{1}))
-		if !kMatrixEqual(fsGammaAgg, proof.GammaAggK) {
-			return false, false, false, errors.New("VerifyNIZK: GammaAggK mismatch")
-		}
 		gammaPrimeBytes = bytesFromKScalarMat(fsGammaPrime)
-		gammaAggBytes = bytesFromKScalarMat(fsGammaAgg)
+		if totalAgg > 0 {
+			if len(proof.GammaAggK) == 0 {
+				return false, false, false, errors.New("VerifyNIZK: missing GammaAggK for θ>1")
+			}
+			fsGammaAgg := sampleFSVectorK(len(proof.GammaAggK), len(proof.GammaAggK[0]), proof.Theta, q, newFSRNG("GammaPrimeAgg", seed2, []byte{1}))
+			if !kMatrixEqual(fsGammaAgg, proof.GammaAggK) {
+				return false, false, false, errors.New("VerifyNIZK: GammaAggK mismatch")
+			}
+			gammaAggBytes = bytesFromKScalarMat(fsGammaAgg)
+		}
 	} else {
 		if len(proof.GammaPrime) == 0 || len(proof.GammaPrime[0]) == 0 {
 			return false, false, false, errors.New("VerifyNIZK: missing GammaPrime")
-		}
-		if len(proof.GammaAgg) == 0 || len(proof.GammaAgg[0]) == 0 {
-			return false, false, false, errors.New("VerifyNIZK: missing GammaAgg")
 		}
 		rows := len(proof.GammaPrime)
 		cols := len(proof.GammaPrime[0])
@@ -171,22 +190,20 @@ func VerifyNIZK(proof *Proof) (okLin, okEq4, okSum bool, err error) {
 		if !matrixEqual(fsGammaPrime, proof.GammaPrime) {
 			return false, false, false, errors.New("VerifyNIZK: GammaPrime mismatch")
 		}
-		rowsAgg := len(proof.GammaAgg)
-		colsAgg := len(proof.GammaAgg[0])
-		fsGammaAgg := sampleFSMatrix(rowsAgg, colsAgg, q, newFSRNG("GammaPrimeAgg", seed2, []byte{1}))
-		if !matrixEqual(fsGammaAgg, proof.GammaAgg) {
-			return false, false, false, errors.New("VerifyNIZK: GammaAgg mismatch")
-		}
 		gammaPrimeBytes = bytesFromUint64Matrix(fsGammaPrime)
-		gammaAggBytes = bytesFromUint64Matrix(fsGammaAgg)
+		if totalAgg > 0 {
+			if len(proof.GammaAgg) == 0 || len(proof.GammaAgg[0]) == 0 {
+				return false, false, false, errors.New("VerifyNIZK: missing GammaAgg")
+			}
+			rowsAgg := len(proof.GammaAgg)
+			colsAgg := len(proof.GammaAgg[0])
+			fsGammaAgg := sampleFSMatrix(rowsAgg, colsAgg, q, newFSRNG("GammaPrimeAgg", seed2, []byte{1}))
+			if !matrixEqual(fsGammaAgg, proof.GammaAgg) {
+				return false, false, false, errors.New("VerifyNIZK: GammaAgg mismatch")
+			}
+			gammaAggBytes = bytesFromUint64Matrix(fsGammaAgg)
+		}
 	}
-
-	if len(proof.FparNTT) == 0 || len(proof.FaggNTT) == 0 || len(proof.QNTT) == 0 {
-		return false, false, false, errors.New("VerifyNIZK: missing Eq.(4) polynomial data")
-	}
-	FparPolys := nttMatrixToPolys(ringQ, proof.FparNTT)
-	FaggPolys := nttMatrixToPolys(ringQ, proof.FaggNTT)
-	QPolys := nttMatrixToPolys(ringQ, proof.QNTT)
 
 	var (
 		coeffMatrix [][]uint64
@@ -288,10 +305,6 @@ func VerifyNIZK(proof *Proof) (okLin, okEq4, okSum bool, err error) {
 	for i := 0; i < ell; i++ {
 		maskIdx[i] = ncols + i
 	}
-	etaMerged := proof.RowOpening.Eta
-	if etaMerged <= 0 {
-		etaMerged = len(Gamma)
-	}
 	okLin, err = verifyLVCSConstraints(ringQ, lvcsParams, proof, Gamma, Rpolys, coeffMatrix, barSets, vTargets, maskIdx, proof.Tail, ncols)
 	if err != nil {
 		return false, false, false, fmt.Errorf("VerifyNIZK: %w", err)
@@ -315,6 +328,9 @@ func VerifyNIZK(proof *Proof) (okLin, okEq4, okSum bool, err error) {
 			return false, false, false, fmt.Errorf("VerifyNIZK: kfield.New: %w", fieldErr)
 		}
 		smallFieldK = field
+		if len(proof.QKData) == 0 || len(proof.MKData) == 0 {
+			return false, false, false, errors.New("VerifyNIZK: missing QK/MK data for θ>1")
+		}
 		QK = restoreKPolys(proof.QKData)
 		MK = restoreKPolys(proof.MKData)
 	}
@@ -324,7 +340,33 @@ func VerifyNIZK(proof *Proof) (okLin, okEq4, okSum bool, err error) {
 	okEq4 = true
 
 	// ----------------------------------------------------------------- ΣΩ check (Eq.7)
-	okSum = VerifyQ(ringQ, QPolys, omega)
+	if proof.Theta > 1 {
+		okSum = VerifyQK_QK(ringQ, smallFieldK, omega, QK)
+		if !okSum {
+			// Debug: check the first non-zero sum residual.
+			for idx := 0; idx < len(QK); idx++ {
+				coeffs := kpolyToCoeffPolys(ringQ, QK[idx])
+				for col := 0; col < len(coeffs[0].Coeffs[0]); col++ {
+					nonzero := false
+					for limb := range coeffs {
+						if coeffs[limb].Coeffs[0][col]%q != 0 {
+							nonzero = true
+							break
+						}
+					}
+					if nonzero {
+						return okLin, okEq4, false, fmt.Errorf("VerifyNIZK: ΣΩ failed at QK[%d] col=%d", idx, col)
+					}
+				}
+			}
+			return okLin, okEq4, false, fmt.Errorf("VerifyNIZK: ΣΩ failed (theta>1)")
+		}
+	} else {
+		okSum = VerifyQ(ringQ, QPolys, omega)
+		if !okSum {
+			return okLin, okEq4, false, fmt.Errorf("VerifyNIZK: ΣΩ failed (theta==1)")
+		}
+	}
 
 	return okLin, okEq4, okSum, nil
 }

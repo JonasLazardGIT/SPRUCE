@@ -480,8 +480,7 @@ func BuildWitnessFromDisk() (w1 []*ring.Poly, w2 *ring.Poly, w3 []*ring.Poly, er
 		ringQ.InvNTT(m, mC)
 		ringQ.InvNTT(x0, x0C)
 		ringQ.InvNTT(x1, x1C)
-		tNTT, err = vsishash.ComputeBBSHash(ringQ, []*ring.Poly{B0Const[0], B0Msg[0][0], B0Rnd[0][0], b1[0]}, mC, x0C, x1C)
-		if err != nil {
+		if _, err := vsishash.ComputeBBSHash(ringQ, []*ring.Poly{B0Const[0], B0Msg[0][0], B0Rnd[0][0], b1[0]}, mC, x0C, x1C); err != nil {
 			return nil, nil, nil, fmt.Errorf("recompute t after regen: %w", err)
 		}
 		for i, v := range sig.Hash.TCoeffs {

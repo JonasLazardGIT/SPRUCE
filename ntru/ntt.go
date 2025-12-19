@@ -1,8 +1,8 @@
 package ntru
 
 import (
-    "os"
-    "github.com/tuneinsight/lattigo/v4/ring"
+	"github.com/tuneinsight/lattigo/v4/ring"
+	"os"
 )
 
 // ToNTT applies the forward Number Theoretic Transform for a given limb.
@@ -37,11 +37,11 @@ func Neg(r *ring.Ring, a, out *ring.Poly) {
 
 // ConvolveRNS performs convolution modulo (x^N+1,Q) using RNS/NTT.
 func ConvolveRNS(a, b ModQPoly, p Params) (ModQPoly, error) {
-    dbg(os.Stderr, "[NTT] ConvolveRNS begin N=%d limbs=%d\n", p.N, len(p.Qi))
-    rings, err := p.BuildRings()
-    if err != nil {
-        return ModQPoly{}, err
-    }
+	dbg(os.Stderr, "[NTT] ConvolveRNS begin N=%d limbs=%d\n", p.N, len(p.Qi))
+	rings, err := p.BuildRings()
+	if err != nil {
+		return ModQPoly{}, err
+	}
 	limbsA := ToRNS(a, p)
 	limbsB := ToRNS(b, p)
 	resLimbs := make([]*ring.Poly, len(rings))
@@ -55,8 +55,8 @@ func ConvolveRNS(a, b ModQPoly, p Params) (ModQPoly, error) {
 		FromNTT(r, res)
 		r.InvMForm(res, res)
 		resLimbs[i] = res
-    }
-    res := FromRNS(resLimbs, p)
-    dbg(os.Stderr, "[NTT] ConvolveRNS done\n")
-    return res, nil
+	}
+	res := FromRNS(resLimbs, p)
+	dbg(os.Stderr, "[NTT] ConvolveRNS done\n")
+	return res, nil
 }

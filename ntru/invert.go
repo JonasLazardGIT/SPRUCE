@@ -76,25 +76,6 @@ func (p polyP) degree() int {
 	return -1
 }
 
-func polyAdd(a, b polyP) polyP {
-	n := len(a.coeffs)
-	if len(b.coeffs) > n {
-		n = len(b.coeffs)
-	}
-	out := make([]uint64, n)
-	for i := 0; i < n; i++ {
-		var ai, bi uint64
-		if i < len(a.coeffs) {
-			ai = a.coeffs[i]
-		}
-		if i < len(b.coeffs) {
-			bi = b.coeffs[i]
-		}
-		out[i] = modAdd(ai, bi, a.q)
-	}
-	return polyP{coeffs: out, q: a.q}
-}
-
 func polySub(a, b polyP) polyP {
 	n := len(a.coeffs)
 	if len(b.coeffs) > n {

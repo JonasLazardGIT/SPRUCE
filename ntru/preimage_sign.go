@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"os"
 	"path/filepath"
 	"time"
+
 	ps "vSIS-Signature/Preimage_Sampler"
 )
 
@@ -138,14 +138,6 @@ func polyHex(p ModQPoly) string {
 		}
 	}
 	return string(hexparts)
-}
-
-func newMod(x, q *big.Int) *big.Int {
-	z := new(big.Int).Mod(new(big.Int).Set(x), q)
-	if z.Sign() < 0 {
-		z.Add(z, q)
-	}
-	return z
 }
 
 // fieldSign returns a copy of e multiplied by sign (+1 or -1) in its current domain.
@@ -338,56 +330,6 @@ func (S *Sampler) SamplePreimageTargetOptionB(t ModQPoly, maxTrials int) (s0, s1
 		return &p0, &p1, trials, nil
 	}
 	return nil, nil, maxTrials, errors.New("OptionB: too many rejections")
-}
-
-// debugResidualInf prints the Linf norm of (g⊛z0 + G⊛z1 − t) mod Q and first few coeffs.
-func (S *Sampler) debugResidualInf(z0, z1 []int64, t *ModQPoly) {
-	if !debugOn {
-		return
-	}
-	gQ := Int64ToModQPoly(S.g, S.Par)
-	GQ := Int64ToModQPoly(S.G, S.Par)
-	z0Q := Int64ToModQPoly(z0, S.Par)
-	z1Q := Int64ToModQPoly(z1, S.Par)
-	gZ0, err1 := ConvolveRNS(z0Q, gQ, S.Par)
-	if err1 != nil {
-		return
-	}
-	GZ1, err2 := ConvolveRNS(z1Q, GQ, S.Par)
-	if err2 != nil {
-		return
-	}
-	r := gZ0.Add(GZ1)
-	// diff = r - t (mod Q)
-	diff := NewModQPoly(S.Par.N, S.Par.Q)
-	for i := 0; i < S.Par.N; i++ {
-		diff.Coeffs[i].Sub(r.Coeffs[i], t.Coeffs[i])
-		diff.Coeffs[i].Mod(diff.Coeffs[i], S.Par.Q)
-	}
-	dCentered := recenterModQ(diff, S.Par)
-	var linf int64
-	for _, v := range dCentered {
-		if v < 0 {
-			v = -v
-		}
-		if v > linf {
-			linf = v
-		}
-	}
-	s0, s1, s2, s3 := "0", "0", "0", "0"
-	if S.Par.N > 0 {
-		s0 = diff.Coeffs[0].String()
-	}
-	if S.Par.N > 1 {
-		s1 = diff.Coeffs[1].String()
-	}
-	if S.Par.N > 2 {
-		s2 = diff.Coeffs[2].String()
-	}
-	if S.Par.N > 3 {
-		s3 = diff.Coeffs[3].String()
-	}
-	dbg(os.Stderr, "[Preimage] residual Linf=%d  coeffs[0..3]=%s,%s,%s,%s\n", linf, s0, s1, s2, s3)
 }
 
 // debugHS1Residual prints Linf of center(h⊛s1 + c1) where c1 is the centered target.

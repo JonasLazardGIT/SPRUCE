@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"os"
 	"runtime"
 	"sort"
 	"testing"
@@ -154,7 +155,6 @@ type simCtx struct {
 	w3                []*ring.Poly
 	origW1Len         int
 	unifiedRowPolys   []*ring.Poly
-	maskRowValues     [][]uint64
 	ell               int
 	ncols             int
 	theta             int
@@ -208,9 +208,6 @@ type simCtx struct {
 	maskPolyCount     int
 	maskRowOffset     int
 	maskRowCount      int
-	openMaskSaved     *lvcs.Opening
-	openTailSaved     *lvcs.Opening
-	combinedOpenSaved *decs.DECSOpening
 	maskDegreeBound   int
 	oracleLayout      lvcs.OracleLayout
 	maskIndependent   []*ring.Poly
@@ -381,6 +378,9 @@ type Proof struct {
 	RoundCounters    [4]uint64 // populated once FS scaffolding lands in Phase 3
 
 	RowOpening *decs.DECSOpening
+	// Credential mode additions: record evaluation domain size and optional truncated omega.
+	NColsUsed  int
+	OmegaTrunc []uint64
 }
 
 type fsRoundResult struct {
@@ -607,6 +607,8 @@ type ProofSnapshot struct {
 	Ctr              [4]uint64
 	Digests          [][]byte
 	LabelsDigest     []byte
+	NColsUsed        int
+	OmegaTrunc       []uint64
 	Lambda           int
 	Kappa            [4]int
 	Theta            int
@@ -1005,13 +1007,6 @@ func kMatrixFirstLimb(mat [][]KScalar) [][]uint64 {
 	return out
 }
 
-func kScalarToElem(K *kf.Field, scalar KScalar) kf.Elem {
-	if K == nil {
-		return kf.Elem{}
-	}
-	return K.Phi(scalar)
-}
-
 func coeffsFromPolys(polys []*ring.Poly) [][]uint64 {
 	if polys == nil {
 		return nil
@@ -1194,20 +1189,6 @@ func sampleDistinctFieldElemsAvoid(count int, q uint64, rng *fsRNG, forbid []uin
 	for _, w := range forbid {
 		seen[w%q] = struct{}{}
 	}
-	for len(res) < count {
-		candidate := rng.nextU64() % q
-		if _, ok := seen[candidate]; ok {
-			continue
-		}
-		seen[candidate] = struct{}{}
-		res = append(res, candidate)
-	}
-	return res
-}
-
-func sampleDistinctFieldElems(count int, q uint64, rng *fsRNG) []uint64 {
-	res := make([]uint64, 0, count)
-	seen := make(map[uint64]struct{}, count)
 	for len(res) < count {
 		candidate := rng.nextU64() % q
 		if _, ok := seen[candidate]; ok {
@@ -1582,6 +1563,8 @@ func (p *Proof) Snapshot() ProofSnapshot {
 		Ctr:              p.Ctr,
 		Digests:          digests,
 		LabelsDigest:     append([]byte(nil), p.LabelsDigest...),
+		NColsUsed:        p.NColsUsed,
+		OmegaTrunc:       append([]uint64(nil), p.OmegaTrunc...),
 		Lambda:           p.Lambda,
 		Kappa:            p.Kappa,
 		Theta:            p.Theta,
@@ -1629,6 +1612,8 @@ func (ps ProofSnapshot) Restore() *Proof {
 		Root:            root,
 		Salt:            append([]byte(nil), ps.Salt...),
 		Ctr:             ps.Ctr,
+		NColsUsed:       ps.NColsUsed,
+		OmegaTrunc:      append([]uint64(nil), ps.OmegaTrunc...),
 		Lambda:          ps.Lambda,
 		Kappa:           ps.Kappa,
 		Theta:           ps.Theta,
@@ -1820,7 +1805,7 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 	} else if o.NLeaves != ringDimension {
 		msg := fmt.Sprintf("SimOpts.NLeaves=%d mismatch ring dimension %d", o.NLeaves, ringDimension)
 		if t != nil {
-			t.Fatalf(msg)
+			t.Fatal(msg)
 		}
 		panic(msg)
 	}
@@ -1843,7 +1828,6 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 
 	// --- NEW: remake signature rows as coefficient-packing rows over Ω -------------
 	ell := o.Ell
-	ncols = o.NCols
 	// length of signature block
 	mSig := len(w1) - len(B0m) - len(B0r)
 	uStart := mSig
@@ -1990,7 +1974,6 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 	var smallFieldChi []uint64
 	var smallFieldOmegaS1 kf.Elem
 	var smallFieldMuInv kf.Elem
-	var maskRowValues [][]uint64
 	if o.Theta > 1 {
 		chi, chiErr := kf.FindIrreducible(q, o.Theta, nil)
 		if chiErr != nil {
@@ -2050,7 +2033,6 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 	maskRows := evalPolysOnOmega(ringQ, independentMasks, omega)
 	rows = append(rows, maskRows...)
 	maskRowCount = len(maskRows)
-	maskRowValues = copyMatrix(maskRows)
 	// locals for theta>1 FS reuse
 	var (
 		E                 []int
@@ -2226,7 +2208,6 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 		QK = fsOut.QK
 		Rpolys = fsOut.Rpolys
 		layoutMasks = clonePolys(M)
-		maskRowValues = evalPolysOnOmega(ringQ, layoutMasks, omega)
 		maskPolyCount = len(layoutMasks)
 		maskDegreeMax = -1
 		for _, kp := range MK {
@@ -2373,7 +2354,6 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 		layoutWitness := clonePolys(w1[:origW1Len])
 		layoutMasks = clonePolys(M)
 		unifiedRowPolys = append(append([]*ring.Poly{}, layoutWitness...), layoutMasks...)
-		maskRowValues = evalPolysOnOmega(ringQ, layoutMasks, omega)
 		qLayout := BuildQLayout{
 			WitnessPolys: layoutWitness,
 			MaskPolys:    layoutMasks,
@@ -2437,8 +2417,7 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 		QAtE = evalPolySetAtIndices(ringQ, Q, E)
 		okEq4Tail = checkEq4OnTailOpen(ringQ, smallFieldK, o.Theta, E, Q, QK, MK, FparAll, FaggAll, GammaPrime, GammaAgg, GammaPrimeK, GammaAggK, proof.MOpening)
 	} else {
-		var transcript4 [][]byte
-		transcript4 = [][]byte{
+		transcript4 := [][]byte{
 			root[:],
 			gammaBytes,
 			gammaPrimeBytes,
@@ -2520,7 +2499,6 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 		w3:                w3,
 		origW1Len:         origW1Len,
 		unifiedRowPolys:   unifiedRowPolys,
-		maskRowValues:     maskRowValues,
 		ell:               ell,
 		ncols:             ncols,
 		theta:             o.Theta,
@@ -2895,29 +2873,6 @@ func evalAt(r *ring.Ring, p *ring.Poly, x uint64) uint64 {
 	return EvalPoly(coeff.Coeffs[0], x%r.Modulus[0], r.Modulus[0])
 }
 
-func evalAtIndexF(r *ring.Ring, p *ring.Poly, idx int) uint64 {
-	coeff := r.NewPoly()
-	r.InvNTT(p, coeff)
-	q := r.Modulus[0]
-	if len(coeff.Coeffs) == 0 || len(coeff.Coeffs[0]) == 0 {
-		return 0
-	}
-	n := len(coeff.Coeffs[0])
-	pos := idx % n
-	if pos < 0 {
-		pos += n
-	}
-	return coeff.Coeffs[0][pos] % q
-}
-
-func evalAtIndexK(r *ring.Ring, K *kf.Field, p *ring.Poly, idx int) kf.Elem {
-	if K == nil {
-		return kf.Elem{}
-	}
-	val := evalAtIndexF(r, p, idx)
-	return K.EmbedF(val % K.Q)
-}
-
 func evalPolySetAtIndices(r *ring.Ring, polys []*ring.Poly, indices []int) [][]uint64 {
 	if len(polys) == 0 || len(indices) == 0 {
 		return nil
@@ -2987,102 +2942,6 @@ func maxPolyDegree(r *ring.Ring, p *ring.Poly) int {
 		}
 	}
 	return -1
-}
-
-func checkEq4AtK(
-	r *ring.Ring, K *kf.Field, e kf.Elem,
-	Q, M []*ring.Poly, Fpar, Fagg []*ring.Poly,
-	gammaPoly [][]*ring.Poly, gammaAgg [][]uint64,
-) bool {
-	q := r.Modulus[0]
-	evalAtK := func(p *ring.Poly) kf.Elem {
-		coeff := r.NewPoly()
-		r.InvNTT(p, coeff)
-		return K.EvalFPolyAtK(coeff.Coeffs[0], e)
-	}
-	for i := range Q {
-		lhs := evalAtK(Q[i])
-		rhs := evalAtK(M[i])
-		for j := range Fpar {
-			g := evalAtK(gammaPoly[i][j])
-			f := evalAtK(Fpar[j])
-			rhs = K.Add(rhs, K.Mul(g, f))
-		}
-		for j := range Fagg {
-			g := K.EmbedF(gammaAgg[i][j] % q)
-			f := evalAtK(Fagg[j])
-			rhs = K.Add(rhs, K.Mul(g, f))
-		}
-		if !elemEqual(K, lhs, rhs) {
-			return false
-		}
-	}
-	return true
-}
-
-func checkEq4AtK_K(
-	r *ring.Ring, K *kf.Field, e kf.Elem,
-	Q []*ring.Poly, MK []*KPoly, Fpar, Fagg []*ring.Poly,
-	gammaK [][]KScalar, gammaAggK [][]KScalar,
-) bool {
-	if K == nil {
-		return false
-	}
-	evalAtK := func(p *ring.Poly) kf.Elem {
-		coeff := r.NewPoly()
-		r.InvNTT(p, coeff)
-		return K.EvalFPolyAtK(coeff.Coeffs[0], e)
-	}
-	for i := range Q {
-		lhs := evalAtK(Q[i])
-		rhs := evalKPolyAtK(K, MK[i], e)
-		for j := range Fpar {
-			g := K.Phi(gammaK[i][j])
-			f := evalAtK(Fpar[j])
-			rhs = K.Add(rhs, K.Mul(g, f))
-		}
-		for j := range Fagg {
-			g := K.Phi(gammaAggK[i][j])
-			f := evalAtK(Fagg[j])
-			rhs = K.Add(rhs, K.Mul(g, f))
-		}
-		if !elemEqual(K, lhs, rhs) {
-			return false
-		}
-	}
-	return true
-}
-
-func checkEq4OnOmegaK(
-	r *ring.Ring, K *kf.Field, omega []uint64,
-	Q []*ring.Poly, MK []*KPoly, Fpar, Fagg []*ring.Poly,
-	gammaK [][]KScalar, gammaAggK [][]KScalar,
-) bool {
-	if K == nil {
-		return false
-	}
-	q := r.Modulus[0]
-	evalAtF := func(p *ring.Poly, w uint64) kf.Elem {
-		coeff := r.NewPoly()
-		r.InvNTT(p, coeff)
-		return K.EvalFPolyAtK(coeff.Coeffs[0], K.EmbedF(w%q))
-	}
-	for i := range Q {
-		for _, w := range omega {
-			lhs := evalAtF(Q[i], w)
-			rhs := evalKPolyAtF(K, MK[i], w)
-			for j := range Fpar {
-				rhs = K.Add(rhs, K.Mul(K.Phi(gammaK[i][j]), evalAtF(Fpar[j], w)))
-			}
-			for j := range Fagg {
-				rhs = K.Add(rhs, K.Mul(K.Phi(gammaAggK[i][j]), evalAtF(Fagg[j], w)))
-			}
-			if !elemEqual(K, lhs, rhs) {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 func VerifyQK(r *ring.Ring, K *kf.Field, omega []uint64, Q []*ring.Poly) bool {
@@ -3212,15 +3071,23 @@ func VerifyQK_QK(r *ring.Ring, K *kf.Field, omega []uint64, QK []*KPoly) bool {
 	if K == nil {
 		return false
 	}
-	for _, QKi := range QK {
+	debug := os.Getenv("DEBUG_QK") != ""
+	for idx, QKi := range QK {
 		if QKi == nil {
 			return false
 		}
 		sum := K.Zero()
-		for _, w := range omega {
-			sum = K.Add(sum, evalKPolyAtF(K, QKi, w))
+		for j, w := range omega {
+			eval := evalKPolyAtF(K, QKi, w)
+			sum = K.Add(sum, eval)
+			if debug && !K.IsZero(eval) {
+				fmt.Fprintf(os.Stderr, "VerifyQK_QK: QK[%d] omega[%d]=%d eval!=0\n", idx, j, w)
+			}
 		}
 		if !K.IsZero(sum) {
+			if debug {
+				fmt.Fprintf(os.Stderr, "VerifyQK_QK: QK[%d] sum!=0\n", idx)
+			}
 			return false
 		}
 	}
@@ -3475,7 +3342,7 @@ func loadPublicTables(ringQ *ring.Ring) (A [][]*ring.Poly, b1, B0Const []*ring.P
 
 	rawB, err := ntrurio.LoadBMatrixCoeffs(resolve("Parameters/Bmatrix.json"))
 	if err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("Bmatrix.json: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("load Bmatrix.json: %w", err)
 	}
 	toNTT := func(coeffs []uint64) *ring.Poly {
 		p := ringQ.NewPoly()
