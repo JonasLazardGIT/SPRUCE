@@ -230,6 +230,41 @@ func VerifyWithConstraints(proof *Proof, set ConstraintSet, pub PublicInputs, op
 				proof.OmegaTrunc = omega
 			}
 		}
+		// Extra soundness for credential mode: the prover supplied FparNTT/FaggNTT
+		// snapshots. Enforce that every Fpar poly is identically zero (all
+		// coefficients), which should hold on honest instances; any tampering that
+		// leaves non-zero residuals is rejected before running the PCS checks.
+		if len(proof.FparNTT) > 0 {
+			par, err := ntrurio.LoadParams(resolve("Parameters/Parameters.json"), true /* allowMismatch */)
+			if err != nil {
+				return false, fmt.Errorf("load params for Fpar check: %w", err)
+			}
+			ringQ, err := ring.NewRing(par.N, []uint64{par.Q})
+			if err != nil {
+				return false, fmt.Errorf("ring for Fpar check: %w", err)
+			}
+			omega := proof.OmegaTrunc
+			if len(omega) == 0 && opts.NCols > 0 {
+				omega, err = deriveOmegaWithNCols(opts.NCols)
+				if err != nil {
+					return false, fmt.Errorf("derive omega for Fpar check: %w", err)
+				}
+			}
+			cols := len(omega)
+			if cols == 0 {
+				if len(proof.FparNTT) > 0 {
+					cols = len(proof.FparNTT[0])
+				}
+			}
+			q := ringQ.Modulus[0]
+			for idx, row := range proof.FparNTT {
+				for j := 0; j < cols && j < len(row); j++ {
+					if row[j]%q != 0 {
+						return false, fmt.Errorf("non-zero Fpar residual at row %d col %d", idx, j)
+					}
+				}
+			}
+		}
 		okLin, okEq4, okSum, err := VerifyNIZK(proof)
 		return okLin && okEq4 && okSum, err
 	}

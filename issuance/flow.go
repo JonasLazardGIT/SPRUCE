@@ -148,8 +148,8 @@ func ApplyChallenge(p *credential.Params, in Inputs, ch Challenge) (*State, erro
 		}
 	}
 
-	sumCarry(in.RU0[0], polyInvNTT(r, ch.RI0[0]), r0, k0)
-	sumCarry(in.RU1[0], polyInvNTT(r, ch.RI1[0]), r1, k1)
+	sumCarry(in.RU0[0], ch.RI0[0], r0, k0)
+	sumCarry(in.RU1[0], ch.RI1[0], r1, k1)
 
 	B, err := loadB(r, p.BPath)
 	if err != nil {

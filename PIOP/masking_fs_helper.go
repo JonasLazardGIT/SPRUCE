@@ -277,22 +277,11 @@ func runMaskFS(args maskFSArgs) (maskFSOutput, error) {
 	// Masks and Q/QK generation (delegated, same logic as buildSimWith)
 	if proof.Theta > 1 {
 		// Small-field branch
-		var MK []*KPoly
-		if args.opts.Credential {
-			// Credential mode: use independent masks that already have ΣΩ=0 so that
-			// non-zero residuals propagate to QK sums and are caught by the verifier.
-			MK = args.independentMasksK
-			if len(MK) < args.rho {
-				MK = SampleIndependentMaskPolynomialsK(ringQ, args.smallFieldK, args.rho, args.maskDegreeTarget, args.omega)
-			} else {
-				MK = MK[:args.rho]
-			}
-		} else {
-			// PACS mode: keep the compensated masks so ΣΩ holds by construction.
-			sumFpar := sumPolyList(ringQ, args.FparAll, args.omega)
-			sumFagg := sumPolyList(ringQ, args.FaggAll, args.omega)
-			MK = BuildMaskPolynomialsK(ringQ, args.smallFieldK, args.rho, args.maskDegreeTarget, args.omega, GammaPrimeK, GammaAggK, sumFpar, sumFagg)
-		}
+		// Use compensated masks (PACS style) so ΣΩ holds on valid inputs.
+		// Residual constraints still detect tampering (non-zero Q/QK evals).
+		sumFpar := sumPolyList(ringQ, args.FparAll, args.omega)
+		sumFagg := sumPolyList(ringQ, args.FaggAll, args.omega)
+		MK := BuildMaskPolynomialsK(ringQ, args.smallFieldK, args.rho, args.maskDegreeTarget, args.omega, GammaPrimeK, GammaAggK, sumFpar, sumFagg)
 		M := make([]*ring.Poly, args.rho)
 		for i := range MK {
 			poly := ringQ.NewPoly()

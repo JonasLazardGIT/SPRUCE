@@ -90,13 +90,11 @@ func TestCStyleSignVerifyRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode x1: %v", err)
 	}
-<<<<<<< ours
-=======
 	// If BFile is invalid (e.g., a directory), skip as a missing fixture.
-	if info, statErr := os.Stat(sig.Hash.BFile); statErr == nil && info.IsDir() {
-		t.Skipf("BFile %q is a directory; skipping hash bridge check", sig.Hash.BFile)
+	if info, statErr := os.Stat(sig.Hash.BFile); statErr != nil || (statErr == nil && info.IsDir()) {
+		t.Skipf("BFile %q not usable (err=%v); skipping hash bridge check", sig.Hash.BFile, statErr)
+		return
 	}
->>>>>>> theirs
 	tCoeffs, err := ntru.ComputeTargetFromSeeds(sys, sig.Hash.BFile, mSeed, x0Seed, x1Seed)
 	if err != nil {
 		t.Fatalf("hash bridge: %v", err)
