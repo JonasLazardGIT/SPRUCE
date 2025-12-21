@@ -259,14 +259,6 @@ func SignTargetAndSave(t []int64, maxTrials int, opts ntru.SamplerOpts) (*keys.S
 	return sig, nil
 }
 
-// polyInvNTT returns a coeff copy of p (inv NTT).
-func polyInvNTT(r *ring.Ring, p *ring.Poly) *ring.Poly {
-	cp := r.NewPoly()
-	ring.Copy(p, cp)
-	r.InvNTT(cp, cp)
-	return cp
-}
-
 // rPolys wraps a single poly into a slice (for WitnessInputs convenience).
 func rPolys(p *ring.Poly) []*ring.Poly {
 	return []*ring.Poly{p}
