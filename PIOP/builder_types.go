@@ -10,6 +10,8 @@ type PublicInputs struct {
 	Ac     [][]*ring.Poly
 	B      []*ring.Poly
 	T      []int64
+	Tag    [][]int64
+	Nonce  [][]int64
 	U      []*ring.Poly
 	BoundB int64
 	Extras map[string]interface{}
@@ -42,6 +44,20 @@ type ConstraintSet struct {
 	FparNorm []*ring.Poly
 	FaggInt  []*ring.Poly
 	FaggNorm []*ring.Poly
+
+	// Optional PRF layout for showing-mode verification from openings.
+	PRFLayout *PRFLayout
+}
+
+// PRFLayout carries enough metadata to locate and verify the PRF trace in the
+// committed rows during showing verification.
+type PRFLayout struct {
+	StartIdx int
+	LenKey   int
+	LenNonce int
+	RF       int
+	RP       int
+	LenTag   int
 }
 
 // StatementBuilder defines an interface to build/prove/verify a statement.

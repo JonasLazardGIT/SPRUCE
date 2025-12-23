@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/tuneinsight/lattigo/v4/ring"
+	"vSIS-Signature/prf"
 )
 
 // BuildHashConstraints (pre-sign, paper form) enforces the cleared-denominator
@@ -275,4 +276,218 @@ func BuildCredentialConstraintSetPre(ringQ *ring.Ring, bound int64, pub PublicIn
 		FparNorm: fparBounds,
 		// FaggInt/FaggNorm intentionally empty for pre-sign: pure Fpar statement.
 	}, nil
+}
+
+// BuildPRFConstraintSet constructs the parallel constraints for tag = F(m2, nonce)
+// using the Poseidon2-like params in prfParams. This follows the degree-5
+// arithmetization (no quadraticization), introducing degree-5 constraints for
+// each round/lanes transition and linear constraints for the feed-forward/tag.
+//
+// Inputs:
+//   - ringQ: PCS ring
+//   - prfParams: PRF Params (ME/MI/cExt/cInt/d/RF/RP/lentag)
+//   - rows: flattened witness rows containing the PRF trace, in coeff domain.
+//     The slice must contain (R+1)*t consecutive rows starting at startIdx,
+//     where R = RF+RP and t = LenKey+LenNonce.
+//   - startIdx: index into rows where x^(0)_0 is stored; row order is
+//     x^(r)_j = rows[startIdx + r*t + j].
+//   - tagPublic: public tag coeffs (len = lentag * N) flattened per lane.
+//   - noncePublic: optional nonce lanes (lenNonce), each of length N; if nil, nonce is not bound.
+//
+// Output: ConstraintSet with FparInt populated; no bounds or agg constraints.
+func BuildPRFConstraintSet(ringQ *ring.Ring, prfParams *prf.Params, rows []*ring.Poly, startIdx int, tagPublic [][]int64, noncePublic [][]int64) (ConstraintSet, error) {
+	if ringQ == nil {
+		return ConstraintSet{}, fmt.Errorf("nil ring")
+	}
+	if prfParams == nil {
+		return ConstraintSet{}, fmt.Errorf("nil prf params")
+	}
+	if err := prfParams.Validate(); err != nil {
+		return ConstraintSet{}, fmt.Errorf("prf params invalid: %w", err)
+	}
+	R := prfParams.RF + prfParams.RP
+	t := prfParams.T()
+	need := startIdx + (R+1)*t
+	if startIdx < 0 || need > len(rows) {
+		return ConstraintSet{}, fmt.Errorf("rows len=%d too small for PRF trace (need %d from %d)", len(rows), (R+1)*t, startIdx)
+	}
+	if len(tagPublic) != prfParams.LenTag {
+		return ConstraintSet{}, fmt.Errorf("tag lanes=%d want %d", len(tagPublic), prfParams.LenTag)
+	}
+	for i := range tagPublic {
+		if len(tagPublic[i]) != ringQ.N {
+			return ConstraintSet{}, fmt.Errorf("tag lane %d len=%d want %d", i, len(tagPublic[i]), ringQ.N)
+		}
+	}
+	if noncePublic != nil && len(noncePublic) != prfParams.LenNonce {
+		return ConstraintSet{}, fmt.Errorf("nonce lanes=%d want %d", len(noncePublic), prfParams.LenNonce)
+	}
+	if noncePublic != nil {
+		for i := range noncePublic {
+			if len(noncePublic[i]) != ringQ.N {
+				return ConstraintSet{}, fmt.Errorf("nonce lane %d len=%d want %d", i, len(noncePublic[i]), ringQ.N)
+			}
+		}
+	}
+	q := int64(ringQ.Modulus[0])
+
+	// Witness states are expected in coeff domain. Copy as-is (no InvNTT).
+	toCoeff := func(p *ring.Poly) *ring.Poly {
+		cp := ringQ.NewPoly()
+		ring.Copy(p, cp)
+		return cp
+	}
+	toNTT := func(p *ring.Poly) *ring.Poly {
+		cp := ringQ.NewPoly()
+		ring.Copy(p, cp)
+		ringQ.NTT(cp, cp)
+		return cp
+	}
+	getState := func(r, j int) *ring.Poly {
+		return rows[startIdx+r*t+j]
+	}
+	powCoeff := func(coeff *ring.Poly, d uint64) *ring.Poly {
+		for i := 0; i < ringQ.N; i++ {
+			v := coeff.Coeffs[0][i] % uint64(q)
+			res := uint64(1)
+			base := v
+			exp := d
+			for exp > 0 {
+				if exp&1 == 1 {
+					res = (res * base) % uint64(q)
+				}
+				base = (base * base) % uint64(q)
+				exp >>= 1
+			}
+			coeff.Coeffs[0][i] = res
+		}
+		return toNTT(coeff)
+	}
+	scaleNTT := func(p *ring.Poly, scalar uint64) *ring.Poly {
+		cp := ringQ.NewPoly()
+		ring.Copy(p, cp)
+		for i := 0; i < ringQ.N; i++ {
+			cp.Coeffs[0][i] = (cp.Coeffs[0][i] * scalar) % uint64(q)
+		}
+		return cp
+	}
+
+	residuals := make([]*ring.Poly, 0, (prfParams.RF+prfParams.RP)*t+prfParams.LenTag)
+
+	rIdx := 0
+	// External rounds (first half)
+	for r := 0; r < prfParams.RF/2; r++ {
+		lanePow := make([]*ring.Poly, t)
+		for i := 0; i < t; i++ {
+			coeff := toCoeff(getState(rIdx, i))
+			for idx := 0; idx < ringQ.N; idx++ {
+				coeff.Coeffs[0][idx] = (coeff.Coeffs[0][idx] + prfParams.CExt[r][i]) % uint64(q)
+			}
+			lanePow[i] = powCoeff(coeff, prfParams.D)
+		}
+		for j := 0; j < t; j++ {
+			acc := ringQ.NewPoly()
+			for i := 0; i < t; i++ {
+				term := scaleNTT(lanePow[i], prfParams.ME[j][i]%uint64(q))
+				ringQ.Add(acc, term, acc)
+			}
+			res := ringQ.NewPoly()
+			ring.Copy(acc, res)
+			nextNTT := toNTT(getState(rIdx+1, j))
+			ringQ.Sub(res, nextNTT, res)
+			residuals = append(residuals, res)
+		}
+		rIdx++
+	}
+	// Internal rounds
+	for ir := 0; ir < prfParams.RP; ir++ {
+		prevBase := getState(rIdx, 0)
+		u1 := toCoeff(prevBase)
+		ring.Copy(getState(rIdx, 0), u1)
+		for idx := 0; idx < ringQ.N; idx++ {
+			u1.Coeffs[0][idx] = (u1.Coeffs[0][idx] + prfParams.CInt[ir]) % uint64(q)
+		}
+		u1Pow := powCoeff(u1, prfParams.D)
+		for j := 0; j < t; j++ {
+			acc := ringQ.NewPoly()
+			term0 := scaleNTT(u1Pow, prfParams.MI[j][0]%uint64(q))
+			ringQ.Add(acc, term0, acc)
+			for i := 1; i < t; i++ {
+				term := toNTT(getState(rIdx, i))
+				term = scaleNTT(term, prfParams.MI[j][i]%uint64(q))
+				ringQ.Add(acc, term, acc)
+			}
+			res := ringQ.NewPoly()
+			ring.Copy(acc, res)
+			nextNTT := toNTT(getState(rIdx+1, j))
+			ringQ.Sub(res, nextNTT, res)
+			residuals = append(residuals, res)
+		}
+		rIdx++
+	}
+	// External rounds (second half)
+	for r := prfParams.RF / 2; r < prfParams.RF; r++ {
+		lanePow := make([]*ring.Poly, t)
+		for i := 0; i < t; i++ {
+			coeff := toCoeff(getState(rIdx, i))
+			for idx := 0; idx < ringQ.N; idx++ {
+				coeff.Coeffs[0][idx] = (coeff.Coeffs[0][idx] + prfParams.CExt[r][i]) % uint64(q)
+			}
+			lanePow[i] = powCoeff(coeff, prfParams.D)
+		}
+		for j := 0; j < t; j++ {
+			acc := ringQ.NewPoly()
+			for i := 0; i < t; i++ {
+				term := scaleNTT(lanePow[i], prfParams.ME[j][i]%uint64(q))
+				ringQ.Add(acc, term, acc)
+			}
+			res := ringQ.NewPoly()
+			ring.Copy(acc, res)
+			nextNTT := toNTT(getState(rIdx+1, j))
+			ringQ.Sub(res, nextNTT, res)
+			residuals = append(residuals, res)
+		}
+		rIdx++
+	}
+
+	// Tag binding: x^(R)_j + x^(0)_j - tag_j^public = 0 for j<lentag.
+	finalStateIdx := R
+	for j := 0; j < prfParams.LenTag; j++ {
+		pub := ringQ.NewPoly()
+		for idx := 0; idx < ringQ.N; idx++ {
+			v := tagPublic[j][idx]
+			if v < 0 {
+				v += q
+			}
+			pub.Coeffs[0][idx] = uint64(v % q)
+		}
+		ringQ.NTT(pub, pub)
+		res := ringQ.NewPoly()
+		initNTT := toNTT(getState(0, j))
+		finalNTT := toNTT(getState(finalStateIdx, j))
+		ringQ.Add(finalNTT, initNTT, res)
+		ringQ.Sub(res, pub, res)
+		residuals = append(residuals, res)
+	}
+
+	// Nonce binding (public): x^(0)_{lenkey + j} - nonce_j = 0.
+	if noncePublic != nil {
+		for j := 0; j < prfParams.LenNonce; j++ {
+			pub := ringQ.NewPoly()
+			for idx := 0; idx < ringQ.N; idx++ {
+				v := noncePublic[j][idx]
+				if v < 0 {
+					v += q
+				}
+				pub.Coeffs[0][idx] = uint64(v % q)
+			}
+			ringQ.NTT(pub, pub)
+			res := ringQ.NewPoly()
+			initNTT := toNTT(getState(0, prfParams.LenKey+j))
+			ringQ.Sub(initNTT, pub, res)
+			residuals = append(residuals, res)
+		}
+	}
+
+	return ConstraintSet{FparInt: residuals}, nil
 }

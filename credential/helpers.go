@@ -33,6 +33,21 @@ func CombineRandomness(rUser, rIssuer []int64, bound int64) ([]int64, error) {
 	return out, nil
 }
 
+// PolyToElems converts a coefficient-domain poly to a slice of uint64 mod q, truncated to maxLen.
+// If maxLen exceeds the number of coefficients, it truncates to len(coeffs).
+func PolyToElems(p *ring.Poly, q uint64, maxLen int) []uint64 {
+	coeffs := p.Coeffs[0]
+	n := len(coeffs)
+	if maxLen > n {
+		maxLen = n
+	}
+	out := make([]uint64, maxLen)
+	for i := 0; i < maxLen; i++ {
+		out[i] = coeffs[i] % q
+	}
+	return out
+}
+
 // HashMessage computes t = h_{m,(r0,r1)}(B) from explicit polynomials.
 // Inputs m1, m2, r0, r1 are expected in coefficient domain; B in NTT.
 // The output coefficients are centered in [-q/2, q/2].

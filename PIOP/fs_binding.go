@@ -40,6 +40,18 @@ func BuildPublicLabels(pub PublicInputs) []PublicLabel {
 		}
 		labels = append(labels, PublicLabel{Name: name, Data: b})
 	}
+	appendInt64Slices := func(name string, slices [][]int64) {
+		if len(slices) == 0 {
+			return
+		}
+		buf := new(bytes.Buffer)
+		for _, vals := range slices {
+			for _, v := range vals {
+				_ = binary.Write(buf, binary.LittleEndian, uint64(v))
+			}
+		}
+		labels = append(labels, PublicLabel{Name: name, Data: buf.Bytes()})
+	}
 	if len(pub.Com) > 0 {
 		appendPoly("Com", pub.Com)
 	}
@@ -61,6 +73,12 @@ func BuildPublicLabels(pub PublicInputs) []PublicLabel {
 	}
 	if len(pub.T) > 0 {
 		appendInt64("T", pub.T)
+	}
+	if len(pub.Tag) > 0 {
+		appendInt64Slices("Tag", pub.Tag)
+	}
+	if len(pub.Nonce) > 0 {
+		appendInt64Slices("Nonce", pub.Nonce)
 	}
 	if len(pub.U) > 0 {
 		appendPoly("U", pub.U)

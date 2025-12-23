@@ -381,6 +381,8 @@ type Proof struct {
 	// Credential mode additions: record evaluation domain size and optional truncated omega.
 	NColsUsed  int
 	OmegaTrunc []uint64
+	// Optional PRF layout metadata for showing proofs.
+	PRFLayout *PRFLayout
 }
 
 type fsRoundResult struct {

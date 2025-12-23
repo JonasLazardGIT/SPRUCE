@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 )
 
 // Params holds all public parameters for the PRF permutation.
@@ -105,4 +107,15 @@ func LoadParamsFromFile(path string) (*Params, error) {
 	}
 	defer f.Close()
 	return LoadParams(f)
+}
+
+// LoadDefaultParams loads prf_params.json from the prf package directory.
+func LoadDefaultParams() (*Params, error) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return nil, fmt.Errorf("runtime.Caller failed")
+	}
+	dir := filepath.Dir(file)
+	path := filepath.Join(dir, "prf_params.json")
+	return LoadParamsFromFile(path)
 }

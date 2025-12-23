@@ -7,6 +7,7 @@ import (
 	lvcs "vSIS-Signature/LVCS"
 	kf "vSIS-Signature/internal/kfield"
 	ntrurio "vSIS-Signature/ntru/io"
+	"vSIS-Signature/prf"
 
 	"github.com/tuneinsight/lattigo/v4/ring"
 )
@@ -38,8 +39,21 @@ func BuildWithConstraints(pub PublicInputs, wit WitnessInputs, set ConstraintSet
 		if len(set.FparInt)+len(set.FparNorm)+len(set.FaggInt)+len(set.FaggNorm) == 0 {
 			return nil, fmt.Errorf("empty constraint set for credential mode")
 		}
-		// Map witness inputs to rows/layout/decs params (theta=1 baseline).
+		// Map witness inputs to rows/layout/decs params.
 		rows, rowInputs, rowLayout, decsParams, maskRowOffset, maskRowCount, witnessCount, _, err := buildCredentialRows(ringQ, wit, opts)
+		// If PRF trace is present, switch to showing row builder.
+		if err == nil && wit.Extras != nil {
+			if _, ok := wit.Extras["prf_trace"]; ok {
+				params, perr := prf.LoadDefaultParams()
+				if perr != nil {
+					return nil, fmt.Errorf("load prf params: %w", perr)
+				}
+				rows, rowInputs, rowLayout, decsParams, maskRowOffset, maskRowCount, witnessCount, _, _, perr = BuildCredentialRowsShowing(ringQ, wit, params.LenKey, params.LenNonce, params.RF, params.RP, opts)
+				if perr != nil {
+					return nil, fmt.Errorf("build showing rows: %w", perr)
+				}
+			}
+		}
 		if err != nil {
 			return nil, fmt.Errorf("build credential rows: %w", err)
 		}
@@ -193,6 +207,146 @@ func BuildWithConstraints(pub PublicInputs, wit WitnessInputs, set ConstraintSet
 	// PACS builds its own witness/constraints internally.
 	b := NewPACSBuilder(opts)
 	return b.Build(pub, wit, MaskConfig{})
+}
+
+// BuildWithRows mirrors BuildWithConstraints but accepts precomputed rows/layout.
+// Currently supports theta=1 only.
+func BuildWithRows(pub PublicInputs, set ConstraintSet, opts SimOpts, rows []*ring.Poly, rowInputs []lvcs.RowInput, rowLayout RowLayout, decsParams decs.Params, maskRowOffset, maskRowCount, witnessCount, ncols int) (*Proof, error) {
+	opts.applyDefaults()
+	if !opts.Credential {
+		return nil, fmt.Errorf("BuildWithRows is credential-only")
+	}
+	if len(set.FparInt)+len(set.FparNorm)+len(set.FaggInt)+len(set.FaggNorm) == 0 {
+		return nil, fmt.Errorf("empty constraint set")
+	}
+	ringQ, omega, _, err := loadParamsAndOmega(opts)
+	if err != nil {
+		return nil, fmt.Errorf("load params/omega: %w", err)
+	}
+	FparAll := append([]*ring.Poly{}, set.FparInt...)
+	FparAll = append(FparAll, set.FparNorm...)
+	FaggAll := append([]*ring.Poly{}, set.FaggInt...)
+	FaggAll = append(FaggAll, set.FaggNorm...)
+	_, _, maskTarget, maskBound, _, _, err := deriveMaskingConfig(ringQ, opts, FparAll, FaggAll, omega)
+	if err != nil {
+		return nil, fmt.Errorf("derive masking config: %w", err)
+	}
+	labels := BuildPublicLabels(pub)
+	labelsDigest := computeLabelsDigest(labels)
+	// Small-field path if theta>1.
+	var (
+		sfRows                 [][]uint64
+		sfK                    *kf.Field
+		sfChi                  []uint64
+		sfOmegaS1              []uint64
+		sfMuInv                []uint64
+		sfNCols                = ncols
+		witnessPolys           = rows
+		rowInputsEffective     = rowInputs
+		rowLayoutEffective     = rowLayout
+		decsParamsEffective    = decsParams
+		witnessCountEffective  = witnessCount
+		maskRowOffsetEffective = maskRowOffset
+		maskRowCountEffective  = maskRowCount
+	)
+	if opts.Theta > 1 {
+		// Derive small-field rows from the provided witness rows.
+		headLen := ncols
+		if headLen <= 0 || headLen > len(omega) {
+			headLen = len(omega)
+		}
+		omega = append([]uint64(nil), omega[:headLen]...)
+		sf, sfErr := deriveSmallFieldParams(ringQ, omega, rows, nil, nil, opts.Ell, headLen, opts.Theta)
+		if sfErr != nil {
+			return nil, fmt.Errorf("small-field params: %w", sfErr)
+		}
+		sfRows = make([][]uint64, len(sf.Rows))
+		for i := range sf.Rows {
+			row := sf.Rows[i]
+			if len(row) > headLen {
+				row = row[:headLen]
+			} else if len(row) < headLen {
+				pad := make([]uint64, headLen)
+				copy(pad, row)
+				row = pad
+			}
+			sfRows[i] = row
+		}
+		witnessCountEffective = len(sfRows)
+		maskRowOffsetEffective = witnessCountEffective
+		maskRowCountEffective = opts.Rho
+		for i := 0; i < maskRowCountEffective; i++ {
+			sfRows = append(sfRows, make([]uint64, headLen))
+		}
+		rowInputsEffective = make([]lvcs.RowInput, len(sfRows))
+		for i := range sfRows {
+			rowInputsEffective[i] = lvcs.RowInput{Head: sfRows[i]}
+		}
+		rowLayoutEffective = RowLayout{SigCount: witnessCountEffective}
+		sfK = sf.K
+		sfChi = sf.Chi
+		sfOmegaS1 = append([]uint64(nil), sf.OmegaS1.Limb...)
+		sfMuInv = append([]uint64(nil), sf.MuInv.Limb...)
+		sfNCols = headLen
+		if len(omega) > sfNCols {
+			omega = append([]uint64(nil), omega[:sfNCols]...)
+		}
+		if witnessCountEffective > len(witnessPolys) {
+			pad := make([]*ring.Poly, witnessCountEffective)
+			copy(pad, witnessPolys)
+			for i := len(witnessPolys); i < witnessCountEffective; i++ {
+				pad[i] = ringQ.NewPoly()
+			}
+			witnessPolys = pad
+		}
+		// Degree bound for LVCS on headLen.
+		maxDegree := sfNCols + opts.Ell - 1
+		if maxDegree >= int(ringQ.N) {
+			maxDegree = int(ringQ.N) - 1
+		}
+		decsParamsEffective = decs.Params{Degree: maxDegree, Eta: opts.Eta, NonceBytes: 16}
+	}
+
+	root, pk, oracleLayout, err := commitRows(ringQ, rowInputsEffective, opts.Ell, decsParamsEffective, witnessCountEffective, maskRowOffsetEffective, maskRowCountEffective)
+	if err != nil {
+		return nil, fmt.Errorf("commit rows: %w", err)
+	}
+	mfsIn := MaskingFSInput{
+		RingQ:             ringQ,
+		Opts:              opts,
+		Omega:             omega,
+		Root:              root,
+		PK:                pk,
+		OracleLayout:      oracleLayout,
+		RowLayout:         rowLayoutEffective,
+		FparInt:           set.FparInt,
+		FparNorm:          set.FparNorm,
+		FaggInt:           set.FaggInt,
+		FaggNorm:          set.FaggNorm,
+		RowInputs:         rowInputsEffective,
+		WitnessPolys:      witnessPolys,
+		MaskRowOffset:     maskRowOffsetEffective,
+		MaskRowCount:      maskRowCountEffective,
+		MaskDegreeTarget:  maskTarget,
+		MaskDegreeBound:   maskBound,
+		Personalization:   FSModeCredential,
+		NCols:             sfNCols,
+		DecsParams:        decsParamsEffective,
+		LabelsDigest:      labelsDigest,
+		SmallFieldChi:     sfChi,
+		SmallFieldOmegaS1: sfOmegaS1,
+		SmallFieldMuInv:   sfMuInv,
+		SmallFieldK:       sfK,
+		SmallFieldRows:    sfRows,
+	}
+	proof, err := RunMaskingFS(mfsIn)
+	if err != nil {
+		return nil, fmt.Errorf("RunMaskingFS: %w", err)
+	}
+	proof.FparNTT = polysToNTTMatrix(FparAll)
+	proof.FaggNTT = polysToNTTMatrix(FaggAll)
+	proof.LabelsDigest = labelsDigest
+	return proof, nil
 }
 
 // VerifyWithConstraints replays the FS transcript for a proof built with

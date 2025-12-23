@@ -67,6 +67,45 @@ func pathToParams(t *testing.T) string {
 	return filepath.Join(dir, "prf_params.json")
 }
 
+func TestTraceMatchesPermute(t *testing.T) {
+	p, err := LoadDefaultParams()
+	if err != nil {
+		t.Fatalf("load default params: %v", err)
+	}
+	rng := rand.New(rand.NewSource(99))
+	f := NewField(p.Q)
+	key := make([]Elem, p.LenKey)
+	nonce := make([]Elem, p.LenNonce)
+	fill := func(dst []Elem) {
+		for i := range dst {
+			dst[i] = Elem(uint64(rng.Int63()) % f.Q())
+		}
+	}
+	fill(key)
+	fill(nonce)
+	init, err := ConcatKeyNonce(key, nonce, p)
+	if err != nil {
+		t.Fatalf("concat: %v", err)
+	}
+	trace, err := Trace(init, p)
+	if err != nil {
+		t.Fatalf("trace: %v", err)
+	}
+	wantLen := p.RF + p.RP + 1
+	if len(trace) != wantLen {
+		t.Fatalf("trace len=%d want %d", len(trace), wantLen)
+	}
+	// Final state from Trace should match PermuteInPlace result.
+	finalFromTrace := append([]Elem(nil), trace[len(trace)-1]...)
+	state := append([]Elem(nil), init...)
+	PermuteInPlace(state, p)
+	for i := range state {
+		if state[i] != finalFromTrace[i] {
+			t.Fatalf("mismatch at %d: perm=%d trace=%d", i, state[i], finalFromTrace[i])
+		}
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
