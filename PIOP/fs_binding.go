@@ -68,6 +68,13 @@ func BuildPublicLabels(pub PublicInputs) []PublicLabel {
 		}
 		appendPoly("Ac", flat)
 	}
+	if len(pub.A) > 0 {
+		flat := make([]*ring.Poly, 0, len(pub.A)*len(pub.A[0]))
+		for _, row := range pub.A {
+			flat = append(flat, row...)
+		}
+		appendPoly("A", flat)
+	}
 	if len(pub.B) > 0 {
 		appendPoly("B", pub.B)
 	}

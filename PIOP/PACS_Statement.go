@@ -142,6 +142,66 @@ func BuildThetaPrimeSet(
 	}
 }
 
+// BuildThetaPrimeSetCoeff builds Θ′ using coefficient packing: each Θ′ row
+// stores the raw coefficient vector (first |Ω| entries) of the source poly.
+// This matches the CoeffPacking witness layout where row values equal coeffs.
+func BuildThetaPrimeSetCoeff(
+	ringQ *ring.Ring,
+	A [][]*ring.Poly, // [row][col]
+	b1 []*ring.Poly, // [row]
+	B0Const []*ring.Poly, // [row]
+	B0Msg, B0Rnd [][]*ring.Poly, // [msgIdx][row]  /  [rndIdx][row]
+	omega []uint64, // |Ω| = s
+) *ThetaPrime {
+	q := ringQ.Modulus[0]
+	s := len(omega)
+
+	coeffVals := func(p *ring.Poly) []uint64 {
+		coeff := ringQ.NewPoly()
+		ringQ.InvNTT(p, coeff)
+		if s > len(coeff.Coeffs[0]) {
+			panic("BuildThetaPrimeSetCoeff: |Ω| exceeds ring degree")
+		}
+		vals := make([]uint64, s)
+		for j := 0; j < s; j++ {
+			vals[j] = coeff.Coeffs[0][j] % q
+		}
+		return vals
+	}
+
+	aRows := make([][]*ring.Poly, len(A))
+	for i := range A {
+		aRows[i] = make([]*ring.Poly, len(A[i]))
+		for k := range A[i] {
+			aRows[i][k] = BuildThetaPrime(ringQ, coeffVals(A[i][k]), omega)
+		}
+	}
+
+	buildRowPolys := func(src []*ring.Poly) []*ring.Poly {
+		out := make([]*ring.Poly, len(src))
+		for j, pj := range src {
+			out[j] = BuildThetaPrime(ringQ, coeffVals(pj), omega)
+		}
+		return out
+	}
+
+	build2D := func(src [][]*ring.Poly) [][]*ring.Poly {
+		out := make([][]*ring.Poly, len(src))
+		for idx := range src {
+			out[idx] = buildRowPolys(src[idx])
+		}
+		return out
+	}
+
+	return &ThetaPrime{
+		ARows:   aRows,
+		B1Rows:  buildRowPolys(b1),
+		B0Const: buildRowPolys(B0Const),
+		B0Msg:   build2D(B0Msg),
+		B0Rnd:   build2D(B0Rnd),
+	}
+}
+
 // q_polys.go  (same PIOP package)
 
 type BuildQLayout struct {

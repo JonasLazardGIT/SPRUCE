@@ -19,6 +19,9 @@ func BuildCredentialRowsShowing(ringQ *ring.Ring, wit WitnessInputs, prfParamsLe
 		return
 	}
 	opts.applyDefaults()
+	if opts.NCols <= 0 {
+		opts.NCols = int(ringQ.N)
+	}
 	ncols = opts.NCols
 	// Pre-sign base rows.
 	// Pre-sign rows: optional in PRF-only demos; include only if provided.
@@ -48,6 +51,27 @@ func BuildCredentialRowsShowing(ringQ *ring.Ring, wit WitnessInputs, prfParamsLe
 	}
 	if len(wit.K1) > 0 {
 		rows = append(rows, wit.K1[0])
+	}
+	// Optional internal T row (hash output) for post-signature proofs.
+	if len(wit.T) > 0 {
+		tPoly := ringQ.NewPoly()
+		if len(wit.T) > len(tPoly.Coeffs[0]) {
+			err = fmt.Errorf("t length %d exceeds ring dimension %d", len(wit.T), len(tPoly.Coeffs[0]))
+			return
+		}
+		q := int64(ringQ.Modulus[0])
+		for i := range wit.T {
+			v := wit.T[i] % q
+			if v < 0 {
+				v += q
+			}
+			tPoly.Coeffs[0][i] = uint64(v)
+		}
+		rows = append(rows, tPoly)
+	}
+	// Post-signature: include all U rows if provided.
+	if len(wit.U) > 0 {
+		rows = append(rows, wit.U...)
 	}
 
 	// PRF trace rows (required for showing).
@@ -79,15 +103,8 @@ func BuildCredentialRowsShowing(ringQ *ring.Ring, wit WitnessInputs, prfParamsLe
 	startIdx = len(rows)
 	rows = append(rows, tracePolys...)
 
-	// Build row inputs (heads) in coeff domain.
-	rowInputs = make([]lvcs.RowInput, len(rows))
-	for i := range rows {
-		head := rows[i].Coeffs[0]
-		if ncols < len(head) {
-			head = head[:ncols]
-		}
-		rowInputs[i] = lvcs.RowInput{Head: head}
-	}
+	// Build row inputs (heads) in evaluation domain (Ω).
+	rowInputs = buildRowInputs(ringQ, rows, ncols)
 
 	witnessCount = len(rows)
 	layout = RowLayout{

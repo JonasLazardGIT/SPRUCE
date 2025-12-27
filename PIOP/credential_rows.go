@@ -20,6 +20,9 @@ func buildCredentialRows(ringQ *ring.Ring, wit WitnessInputs, opts SimOpts) (row
 		return
 	}
 	opts.applyDefaults()
+	if opts.NCols <= 0 {
+		opts.NCols = int(ringQ.N)
+	}
 	ncols = opts.NCols
 
 	require := func(vec []*ring.Poly, name string) error {
@@ -90,18 +93,11 @@ func buildCredentialRows(ringQ *ring.Ring, wit WitnessInputs, opts SimOpts) (row
 
 	// Post-signature: include U if provided.
 	if len(wit.U) > 0 {
-		rows = append(rows, wit.U[0])
+		rows = append(rows, wit.U...)
 	}
 
-	// Build row inputs (heads) in coeff domain.
-	rowInputs = make([]lvcs.RowInput, len(rows))
-	for i := range rows {
-		head := rows[i].Coeffs[0]
-		if ncols < len(head) {
-			head = head[:ncols]
-		}
-		rowInputs[i] = lvcs.RowInput{Head: head}
-	}
+	// Build row inputs (heads) in evaluation domain (Ω).
+	rowInputs = buildRowInputs(ringQ, rows, ncols)
 
 	// Layout: we only set counts; range/chain bases unused for credential mode.
 	witnessCount = len(rows)

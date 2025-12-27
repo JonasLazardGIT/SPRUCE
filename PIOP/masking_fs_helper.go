@@ -276,12 +276,9 @@ func runMaskFS(args maskFSArgs) (maskFSOutput, error) {
 
 	// Masks and Q/QK generation (delegated, same logic as buildSimWith)
 	if proof.Theta > 1 {
-		// Small-field branch
-		// Use compensated masks (PACS style) so ΣΩ holds on valid inputs.
-		// Residual constraints still detect tampering (non-zero Q/QK evals).
-		sumFpar := sumPolyList(ringQ, args.FparAll, args.omega)
-		sumFagg := sumPolyList(ringQ, args.FaggAll, args.omega)
-		MK := BuildMaskPolynomialsK(ringQ, args.smallFieldK, args.rho, args.maskDegreeTarget, args.omega, GammaPrimeK, GammaAggK, sumFpar, sumFagg)
+		// Small-field branch: sample independent masks with ΣΩ M_i = 0.
+		// Do not compensate for ΣΩ Fpar/Fagg; ΣΩ will detect violations.
+		MK := SampleIndependentMaskPolynomialsK(ringQ, args.smallFieldK, args.rho, args.maskDegreeTarget, args.omega)
 		M := make([]*ring.Poly, args.rho)
 		for i := range MK {
 			poly := ringQ.NewPoly()
@@ -438,7 +435,12 @@ func runMaskFS(args maskFSArgs) (maskFSOutput, error) {
 			if zeroTail || conflict {
 				continue
 			}
-			coeffBlock := buildKPointCoeffMatrix(ringQ, args.smallFieldK, args.omega, args.rows, candidate, args.smallFieldMuInv, args.maskRowOffset, args.maskRowCount)
+			var coeffBlock [][]uint64
+			if args.opts.Credential {
+				coeffBlock = buildKPointCoeffMatrixRows(ringQ, args.smallFieldK, len(args.rows), candidate)
+			} else {
+				coeffBlock = buildKPointCoeffMatrix(ringQ, args.smallFieldK, args.omega, args.rows, candidate, args.smallFieldMuInv, args.maskRowOffset, args.maskRowCount)
+			}
 			coeffMatrix = append(coeffMatrix, coeffBlock...)
 			for i := range coeffBlock {
 				rowCopy := append([]uint64(nil), coeffBlock[i]...)
@@ -456,6 +458,22 @@ func runMaskFS(args maskFSArgs) (maskFSOutput, error) {
 		vTargets := computeVTargets(q, args.rows, coeffMatrix)
 		proof.setBarSets(barSets)
 		proof.setVTargets(vTargets)
+		// For credential-mode K-point replay, include row-oriented evaluations of witness rows.
+		if args.opts.Credential && args.maskRowOffset > 0 {
+			witnessRows := args.w1
+			inNTT := false
+			if args.PK != nil && len(args.PK.RowPolys) > 0 {
+				witnessRows = args.PK.RowPolys
+				inNTT = true
+			}
+			if len(witnessRows) > args.maskRowOffset {
+				witnessRows = witnessRows[:args.maskRowOffset]
+			}
+			if len(witnessRows) > 0 && len(smallFieldEvals) > 0 {
+				rowEvals := evalRowsAtKPoints(ringQ, args.smallFieldK, witnessRows, smallFieldEvals, inNTT)
+				proof.setPvalsKEval(rowEvals)
+			}
+		}
 		proof.CoeffMatrix = copyMatrix(coeffMatrix)
 		proof.KPoint = copyMatrix(kPointLimbs)
 		out.barSets = barSets

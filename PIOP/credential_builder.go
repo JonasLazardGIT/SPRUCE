@@ -1,10 +1,8 @@
 package PIOP
 
-import (
-	"fmt"
-)
+import "fmt"
 
-// credentialBuilder will host the credential statement; currently returns not implemented.
+// credentialBuilder hosts the credential statement using BuildWithConstraints.
 type credentialBuilder struct {
 	opts SimOpts
 }
@@ -28,7 +26,7 @@ func (b *credentialBuilder) Build(pub PublicInputs, wit WitnessInputs, _ MaskCon
 	if err != nil {
 		return nil, fmt.Errorf("load params/omega: %w", err)
 	}
-	cs, err := BuildCredentialConstraintSetPre(ringQ, pub.BoundB, pub, wit)
+	cs, err := BuildCredentialConstraintSetPre(ringQ, pub.BoundB, pub, wit, b.opts.NCols)
 	if err != nil {
 		return nil, fmt.Errorf("build credential constraint set: %w", err)
 	}

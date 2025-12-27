@@ -9,6 +9,10 @@ This doc summarizes what is implemented for the credential issuance proof (Spruc
   - Credential builder path (`BuildWithConstraints`) commits rows, derives masking, binds publics via `BuildPublicLabels` + `LabelsDigest`, records `OmegaTrunc/NColsUsed`, runs `runMaskFS` with `PACS-Credential` personalization.
   - `runMaskFS` fully extracted (FS rounds, masks/Q/QK, evals, tail openings) and used for θ>1; uses compensated masks (PACS style).
   - Verifier replays FS with labels digest and omega/ncols overrides; ΣΩ via `VerifyQK_QK`. An implementation guard rejects proofs with non-zero Fpar rows in the provided domain.
+- **Row layout fixes (θ>1)**:
+  - **Row heads are now copied** when building `RowInput` so LVCS commits do not alias (fixes ΣΩ mismatch in pre-sign tests).
+  - K‑point replay uses **committed row polynomials** (`pk.RowPolys`) for `PvalsKEval`, so evaluator sees the same polynomials as the PCS.
+  - `BuildCredentialConstraintSetPre` is rebuilt from committed rows (includes LVCS tails) to match the paper definition \(F_j(X)=f_j(P(X),\Theta(X))\).
 - **Pre-sign statement (working)**:
   - Witness rows: `M1, M2, RU0, RU1, R, R0, R1, K0, K1` (single poly each).
   - Publics: `Com, RI0, RI1, Ac, B, T, BoundB`.
@@ -21,6 +25,7 @@ This doc summarizes what is implemented for the credential issuance proof (Spruc
 - Packing uses full ring split (`N=1024`, half=512): `M1` must be zero on upper half, `M2` zero on lower half.
 - Hash accepts negligible abort for non-invertible denominators (no explicit guard).
 - Fpar zero guard in verifier is an implementation hardness check; PCS ΣΩ still runs.
+- Credential pre‑sign tests pass under **θ=2** with row‑oriented K‑point replay and packing in the evaluation domain.
 
 ## Post-sign (showing) protocol — what to add
 Goal: Holder proves knowledge of `(U, M1, M2, R0, R1 [,RU*,R*,K*])` such that `A·U = T` and `T = h_{m1‖m2,(R0,R1)}(B)` (T internal), and optionally `PRF(m2, nonce) = tag` (PRF currently identity).
@@ -59,7 +64,19 @@ Canonical order suggestion: `A, B, RI0, RI1, [Com, Ac], [Nonce, Tag], extras...`
 - Tampering: flip `U`, flip `M2` or `R0/R1`, packing/bound violations, optional `Com` tamper if re-binding.
 
 ## Next steps (implementation)
-1) Extend `WitnessInputs` to support post-sign rows (`T` internal, `U` present); adjust row builder.
-2) Build post-sign `ConstraintSet` (signature + hash + bounds + packing, optional center/commit/PRF).
-3) Update public labels to the showing order; keep personalization `PACS-Credential`.
-4) Add end-to-end post-sign tests (happy/tamper) with identity PRF placeholder.
+1) **Finalize θ>1 verifier replay**:
+   - Use the K‑point evaluator for **all** credential constraints (pre‑sign) and keep Eq.(4) replay consistent with `PvalsKEval` (no ad‑hoc F‑poly overrides).
+   - Ensure tail/E′ checks are aligned with the same evaluator path when needed.
+2) **Post‑sign row builder**:
+   - Extend `WitnessInputs` to include `T` (internal) and `U`.
+   - Use `BuildCredentialRowsShowing` to append PRF trace rows and set `startIdx`.
+3) **Post‑sign constraint set**:
+   - Add signature residual `A·U=T`.
+   - Move hash to witness‑internal `T` (cleared denominator, now bilinear).
+   - Keep packing + bounds (and optional center/commit rebinding).
+4) **PRF constraints (showing)**:
+   - Load PRF params, build trace rows, and bind tag/nonce as public.
+   - Add PRF evaluator for K‑point replay with degree‑5 constraints.
+5) **Tests**:
+   - Happy path + tamper for post‑sign (U, m2, r0/r1, tag/nonce).
+   - Ensure θ>1 replay stays green with PRF constraints enabled.

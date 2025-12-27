@@ -18,8 +18,7 @@ const FSModeCredential = "PACS-Credential"
 // BuildWithConstraints is an entry point to prove a statement from explicit
 // publics/witnesses and a custom constraint set (F-polys), instead of relying
 // on the baked-in PACS wiring. For now, this bridges to the existing PACS
-// prover when Credential is false; the credential/generalized path is still
-// TODO. The caller can provide a personalization string; if empty,
+// prover when Credential is false. The caller can provide a personalization string; if empty,
 // FSModeCredential is used.
 func BuildWithConstraints(pub PublicInputs, wit WitnessInputs, set ConstraintSet, opts SimOpts, personalization string) (*Proof, error) {
 	opts.applyDefaults()
@@ -31,10 +30,6 @@ func BuildWithConstraints(pub PublicInputs, wit WitnessInputs, set ConstraintSet
 		ringQ, omega, ncols, err := loadParamsAndOmega(opts)
 		if err != nil {
 			return nil, fmt.Errorf("load params/omega: %w", err)
-		}
-		if opts.Theta > 1 && opts.NCols > 0 && len(omega) > opts.NCols {
-			omega = append([]uint64(nil), omega[:opts.NCols]...)
-			ncols = opts.NCols
 		}
 		if len(set.FparInt)+len(set.FparNorm)+len(set.FaggInt)+len(set.FaggNorm) == 0 {
 			return nil, fmt.Errorf("empty constraint set for credential mode")
@@ -60,16 +55,6 @@ func BuildWithConstraints(pub PublicInputs, wit WitnessInputs, set ConstraintSet
 		var root [16]byte
 		var pk *lvcs.ProverKey
 		var oracleLayout lvcs.OracleLayout
-		// Flatten constraint set for masking config derivation.
-		FparAll := append([]*ring.Poly{}, set.FparInt...)
-		FparAll = append(FparAll, set.FparNorm...)
-		FaggAll := append([]*ring.Poly{}, set.FaggInt...)
-		FaggAll = append(FaggAll, set.FaggNorm...)
-		_, _, maskTarget, maskBound, _, maskClipped, err := deriveMaskingConfig(ringQ, opts, FparAll, FaggAll, omega)
-		if err != nil {
-			return nil, fmt.Errorf("derive masking config: %w", err)
-		}
-		_ = maskClipped
 		labels := BuildPublicLabels(pub)
 		labelsDigest := computeLabelsDigest(labels)
 
@@ -80,87 +65,98 @@ func BuildWithConstraints(pub PublicInputs, wit WitnessInputs, set ConstraintSet
 		var sfOmegaS1 []uint64
 		var sfMuInv []uint64
 		sfNCols := ncols
-		// Adjust witness polys when theta>1 to match small-field row layout.
-		witnessPolys := rows
+		// Preserve the base witness polynomials (without masks).
+		origWitnessCount := witnessCount
+		witnessPolys := rows[:origWitnessCount]
 		if opts.Theta > 1 {
-			sf, sfErr := deriveSmallFieldParams(ringQ, omega, rows, nil, nil, opts.Ell, ncols, opts.Theta)
+			sf, sfErr := deriveSmallFieldParamsNoRows(ringQ, omega, opts.Theta)
 			if sfErr != nil {
 				return nil, fmt.Errorf("small-field params: %w", sfErr)
 			}
-			headLen := opts.NCols
-			if headLen <= 0 || headLen > len(omega) {
-				headLen = len(omega)
-			}
-			// Truncate omega to headLen.
-			if headLen < len(omega) {
-				omega = append([]uint64(nil), omega[:headLen]...)
-			}
-			// Truncate/pad small-field rows to headLen to match omega/ell' expectations.
-			sfRows = make([][]uint64, len(sf.Rows))
-			for i := range sf.Rows {
-				row := sf.Rows[i]
-				if len(row) > headLen {
-					row = row[:headLen]
-				} else if len(row) < headLen {
+			// Use row-oriented heads as small-field rows.
+			sfRows = make([][]uint64, len(rowInputs))
+			for i := range rowInputs {
+				head := append([]uint64(nil), rowInputs[i].Head...)
+				if headLen := len(omega); len(head) > headLen {
+					head = head[:headLen]
+				} else if len(head) < headLen {
 					padded := make([]uint64, headLen)
-					copy(padded, row)
-					row = padded
+					copy(padded, head)
+					head = padded
 				}
-				sfRows[i] = row
+				sfRows[i] = head
 			}
-			// Override layout for theta>1: witness rows = len(sfRows), masks appended after.
-			witnessCount = len(sfRows)
-			maskRowOffset = witnessCount
-			maskRowCount = opts.Rho
-			for i := 0; i < maskRowCount; i++ {
-				sfRows = append(sfRows, make([]uint64, headLen))
-			}
-			if len(sfRows) != maskRowOffset+maskRowCount {
-				return nil, fmt.Errorf("small-field rows total mismatch: got %d want %d", len(sfRows), maskRowOffset+maskRowCount)
-			}
-			// Rebuild rowInputs to match small-field rows.
-			rowInputs = make([]lvcs.RowInput, len(sfRows))
-			for i := range sfRows {
-				rowInputs[i] = lvcs.RowInput{Head: sfRows[i]}
-			}
-			rowLayout.SigCount = witnessCount
-			rowLayout.MsgCount = 0
-			rowLayout.RndCount = 0
 			sfK = sf.K
 			sfChi = sf.Chi
 			sfOmegaS1 = append([]uint64(nil), sf.OmegaS1.Limb...)
 			sfMuInv = append([]uint64(nil), sf.MuInv.Limb...)
-			sfNCols = headLen
-			// Truncate omega to the small-field head length to keep LVCS consistent.
-			if headLen < len(omega) {
-				omega = append([]uint64(nil), omega[:headLen]...)
-			}
-			// Pad witness polys to witnessCount (small-field adds theta rows per block).
-			if len(witnessPolys) < witnessCount {
-				padded := make([]*ring.Poly, witnessCount)
-				copy(padded, witnessPolys)
-				for i := len(witnessPolys); i < witnessCount; i++ {
-					padded[i] = ringQ.NewPoly()
-				}
-				witnessPolys = padded
-			}
-			rows = witnessPolys
-			// Recompute decs params for small-field head length, matching LVCS blinding.
-			maxDegree := sfNCols + opts.Ell - 1
-			if maxDegree >= int(ringQ.N) {
-				maxDegree = int(ringQ.N) - 1
-			}
-			decsParams = decs.Params{Degree: maxDegree, Eta: opts.Eta, NonceBytes: 16}
-			// Rebuild omega slice to headLen.
-			if len(omega) > sfNCols {
-				omega = append([]uint64(nil), omega[:sfNCols]...)
-			}
+			sfNCols = len(omega)
 		}
 		// Commit rows to get root/pk/layout using possibly updated rowInputs/layout.
 		root, pk, oracleLayout, err = commitRows(ringQ, rowInputs, opts.Ell, decsParams, witnessCount, maskRowOffset, maskRowCount)
 		if err != nil {
 			return nil, fmt.Errorf("commit rows: %w", err)
 		}
+
+		// Rebuild constraints from the committed row polynomials (with LVCS tails)
+		// to match paper-defined F_j(P,Theta). We replace the pre-sign prefix and
+		// PRF suffix (if present) to keep ordering stable.
+		if opts.Credential && pk != nil && len(pk.RowPolys) > 0 {
+			// Rebuild pre-sign constraints when their publics are present.
+			if len(pub.Ac) > 0 && len(pub.Com) > 0 && len(pub.RI0) > 0 && len(pub.RI1) > 0 && len(pub.B) > 0 && len(pub.T) > 0 {
+				csRows, cerr := buildCredentialConstraintSetPreFromRows(ringQ, pub.BoundB, pub, pk.RowPolys, sfNCols)
+				if cerr != nil {
+					return nil, fmt.Errorf("rebuild credential constraints from rows: %w", cerr)
+				}
+				if len(set.FparInt) < len(csRows.FparInt) {
+					return nil, fmt.Errorf("constraint set too small: have %d want >=%d", len(set.FparInt), len(csRows.FparInt))
+				}
+				copy(set.FparInt[:len(csRows.FparInt)], csRows.FparInt)
+				set.FparNorm = csRows.FparNorm
+			}
+			// Rebuild post-sign constraints when A/B are present (showing path).
+			if len(pub.A) > 0 && len(pub.B) > 0 {
+				postRows, cerr := buildCredentialConstraintSetPostFromRows(ringQ, pub.BoundB, pub, pk.RowPolys, sfNCols)
+				if cerr != nil {
+					return nil, fmt.Errorf("rebuild post-sign constraints from rows: %w", cerr)
+				}
+				if len(set.FparInt) < len(postRows.FparInt) {
+					return nil, fmt.Errorf("constraint set too small for post-sign prefix: have %d want >=%d", len(set.FparInt), len(postRows.FparInt))
+				}
+				copy(set.FparInt[:len(postRows.FparInt)], postRows.FparInt)
+				set.FparNorm = postRows.FparNorm
+				set.FaggInt = postRows.FaggInt
+				set.FaggNorm = postRows.FaggNorm
+			}
+
+			// Rebuild PRF constraints when layout + tag are present.
+			if set.PRFLayout != nil && len(pub.Tag) > 0 {
+				params, perr := prf.LoadDefaultParams()
+				if perr != nil {
+					return nil, fmt.Errorf("load prf params: %w", perr)
+				}
+				prfSet, perr := BuildPRFConstraintSet(ringQ, params, pk.RowPolys, set.PRFLayout.StartIdx, pub.Tag, pub.Nonce, sfNCols)
+				if perr != nil {
+					return nil, fmt.Errorf("rebuild prf constraints from rows: %w", perr)
+				}
+				prfCount := len(prfSet.FparInt)
+				if len(set.FparInt) < prfCount {
+					return nil, fmt.Errorf("constraint set too small for PRF suffix: have %d want >=%d", len(set.FparInt), prfCount)
+				}
+				copy(set.FparInt[len(set.FparInt)-prfCount:], prfSet.FparInt)
+			}
+		}
+
+		// Flatten constraint set for masking config derivation.
+		FparAll := append([]*ring.Poly{}, set.FparInt...)
+		FparAll = append(FparAll, set.FparNorm...)
+		FaggAll := append([]*ring.Poly{}, set.FaggInt...)
+		FaggAll = append(FaggAll, set.FaggNorm...)
+		_, _, maskTarget, maskBound, _, maskClipped, err := deriveMaskingConfig(ringQ, opts, FparAll, FaggAll, omega)
+		if err != nil {
+			return nil, fmt.Errorf("derive masking config: %w", err)
+		}
+		_ = maskClipped
 
 		// Assemble MaskingFSInput and run.
 		mfsIn := MaskingFSInput{
@@ -201,6 +197,7 @@ func BuildWithConstraints(pub PublicInputs, wit WitnessInputs, set ConstraintSet
 		proof.FparNTT = polysToNTTMatrix(FparAll)
 		proof.FaggNTT = polysToNTTMatrix(FaggAll)
 		proof.LabelsDigest = labelsDigest
+		proof.PRFLayout = set.PRFLayout
 		return proof, nil
 	}
 	// Bridge to existing PACS flow; constraint set/publics are ignored because
@@ -251,26 +248,23 @@ func BuildWithRows(pub PublicInputs, set ConstraintSet, opts SimOpts, rows []*ri
 	)
 	if opts.Theta > 1 {
 		// Derive small-field rows from the provided witness rows.
-		headLen := ncols
-		if headLen <= 0 || headLen > len(omega) {
-			headLen = len(omega)
+		headLen := len(omega)
+		rowsNTT := make([]*ring.Poly, len(rows))
+		for i := range rows {
+			rowsNTT[i] = ringQ.NewPoly()
+			ring.Copy(rows[i], rowsNTT[i])
+			ringQ.NTT(rowsNTT[i], rowsNTT[i])
 		}
-		omega = append([]uint64(nil), omega[:headLen]...)
-		sf, sfErr := deriveSmallFieldParams(ringQ, omega, rows, nil, nil, opts.Ell, headLen, opts.Theta)
+		sf, sfErr := deriveSmallFieldParams(ringQ, omega, rowsNTT, nil, nil, opts.Ell, headLen, opts.Theta)
 		if sfErr != nil {
 			return nil, fmt.Errorf("small-field params: %w", sfErr)
 		}
 		sfRows = make([][]uint64, len(sf.Rows))
 		for i := range sf.Rows {
-			row := sf.Rows[i]
-			if len(row) > headLen {
-				row = row[:headLen]
-			} else if len(row) < headLen {
-				pad := make([]uint64, headLen)
-				copy(pad, row)
-				row = pad
-			}
-			sfRows[i] = row
+			sfRows[i] = append([]uint64(nil), sf.Rows[i]...)
+		}
+		if len(sfRows) > 0 && len(sfRows[0]) != headLen {
+			return nil, fmt.Errorf("small-field row length %d != |omega|=%d", len(sfRows[0]), headLen)
 		}
 		witnessCountEffective = len(sfRows)
 		maskRowOffsetEffective = witnessCountEffective
@@ -288,17 +282,6 @@ func BuildWithRows(pub PublicInputs, set ConstraintSet, opts SimOpts, rows []*ri
 		sfOmegaS1 = append([]uint64(nil), sf.OmegaS1.Limb...)
 		sfMuInv = append([]uint64(nil), sf.MuInv.Limb...)
 		sfNCols = headLen
-		if len(omega) > sfNCols {
-			omega = append([]uint64(nil), omega[:sfNCols]...)
-		}
-		if witnessCountEffective > len(witnessPolys) {
-			pad := make([]*ring.Poly, witnessCountEffective)
-			copy(pad, witnessPolys)
-			for i := len(witnessPolys); i < witnessCountEffective; i++ {
-				pad[i] = ringQ.NewPoly()
-			}
-			witnessPolys = pad
-		}
 		// Degree bound for LVCS on headLen.
 		maxDegree := sfNCols + opts.Ell - 1
 		if maxDegree >= int(ringQ.N) {
@@ -384,42 +367,291 @@ func VerifyWithConstraints(proof *Proof, set ConstraintSet, pub PublicInputs, op
 				proof.OmegaTrunc = omega
 			}
 		}
-		// Extra soundness for credential mode: the prover supplied FparNTT/FaggNTT
-		// snapshots. Enforce that every Fpar poly is identically zero (all
-		// coefficients), which should hold on honest instances; any tampering that
-		// leaves non-zero residuals is rejected before running the PCS checks.
-		if len(proof.FparNTT) > 0 {
-			par, err := ntrurio.LoadParams(resolve("Parameters/Parameters.json"), true /* allowMismatch */)
-			if err != nil {
-				return false, fmt.Errorf("load params for Fpar check: %w", err)
+		ringQ, omega, _, err := loadParamsAndOmega(opts)
+		if err != nil {
+			return false, fmt.Errorf("load params for replay: %w", err)
+		}
+		if len(proof.OmegaTrunc) > 0 {
+			omega = append([]uint64(nil), proof.OmegaTrunc...)
+		} else if opts.NCols > 0 && len(omega) > opts.NCols {
+			omega = append([]uint64(nil), omega[:opts.NCols]...)
+		}
+		ncols := ringQ.N
+		if opts.NCols > 0 {
+			ncols = opts.NCols
+		}
+		if proof.NColsUsed > 0 {
+			ncols = proof.NColsUsed
+		}
+
+		// Build T in NTT form for replay checks.
+		var tNTT *ring.Poly
+		var tThetaNTT *ring.Poly
+		if len(pub.T) > 0 {
+			tCoeff := ringQ.NewPoly()
+			q := int64(ringQ.Modulus[0])
+			for i := 0; i < ringQ.N && i < len(pub.T); i++ {
+				v := pub.T[i]
+				if v < 0 {
+					v += q
+				}
+				tCoeff.Coeffs[0][i] = uint64(v % q)
 			}
-			ringQ, err := ring.NewRing(par.N, []uint64{par.Q})
+			tNTT = ringQ.NewPoly()
+			ring.Copy(tCoeff, tNTT)
+			ringQ.NTT(tNTT, tNTT)
+			thetaT, err := thetaPolyFromNTT(ringQ, tNTT, ncols)
 			if err != nil {
-				return false, fmt.Errorf("ring for Fpar check: %w", err)
+				return false, fmt.Errorf("theta T: %w", err)
 			}
-			omega := proof.OmegaTrunc
-			if len(omega) == 0 && opts.NCols > 0 {
-				omega, err = deriveOmegaWithNCols(opts.NCols)
+			tThetaNTT = thetaT
+		}
+		var packSelNTT []uint64
+		if selNTT, _, err := buildPackingSelectorNTT(ringQ, ncols); err == nil {
+			packSelNTT = append([]uint64(nil), selNTT.Coeffs[0]...)
+		}
+
+		thetaAc := make([][]*ring.Poly, len(pub.Ac))
+		for i := range pub.Ac {
+			thetaAc[i] = make([]*ring.Poly, len(pub.Ac[i]))
+			for j := range pub.Ac[i] {
+				theta, err := thetaPolyFromNTT(ringQ, pub.Ac[i][j], ncols)
 				if err != nil {
-					return false, fmt.Errorf("derive omega for Fpar check: %w", err)
+					return false, fmt.Errorf("theta Ac[%d][%d]: %w", i, j, err)
 				}
-			}
-			cols := len(omega)
-			if cols == 0 {
-				if len(proof.FparNTT) > 0 {
-					cols = len(proof.FparNTT[0])
-				}
-			}
-			q := ringQ.Modulus[0]
-			for idx, row := range proof.FparNTT {
-				for j := 0; j < cols && j < len(row); j++ {
-					if row[j]%q != 0 {
-						return false, fmt.Errorf("non-zero Fpar residual at row %d col %d", idx, j)
-					}
-				}
+				thetaAc[i][j] = theta
 			}
 		}
-		okLin, okEq4, okSum, err := VerifyNIZK(proof)
+		thetaCom := make([]*ring.Poly, len(pub.Com))
+		for i := range pub.Com {
+			theta, err := thetaPolyFromNTT(ringQ, pub.Com[i], ncols)
+			if err != nil {
+				return false, fmt.Errorf("theta Com[%d]: %w", i, err)
+			}
+			thetaCom[i] = theta
+		}
+		thetaA := make([][]*ring.Poly, len(pub.A))
+		for i := range pub.A {
+			thetaA[i] = make([]*ring.Poly, len(pub.A[i]))
+			for j := range pub.A[i] {
+				theta, err := thetaPolyFromNTT(ringQ, pub.A[i][j], ncols)
+				if err != nil {
+					return false, fmt.Errorf("theta A[%d][%d]: %w", i, j, err)
+				}
+				thetaA[i][j] = theta
+			}
+		}
+		var thetaRI0, thetaRI1 []*ring.Poly
+		if len(pub.RI0) > 0 {
+			theta, err := thetaPolyFromNTT(ringQ, pub.RI0[0], ncols)
+			if err != nil {
+				return false, fmt.Errorf("theta RI0: %w", err)
+			}
+			thetaRI0 = []*ring.Poly{theta}
+		}
+		if len(pub.RI1) > 0 {
+			theta, err := thetaPolyFromNTT(ringQ, pub.RI1[0], ncols)
+			if err != nil {
+				return false, fmt.Errorf("theta RI1: %w", err)
+			}
+			thetaRI1 = []*ring.Poly{theta}
+		}
+		thetaB := make([]*ring.Poly, len(pub.B))
+		for i := range pub.B {
+			theta, err := thetaPolyFromNTT(ringQ, pub.B[i], ncols)
+			if err != nil {
+				return false, fmt.Errorf("theta B[%d]: %w", i, err)
+			}
+			thetaB[i] = theta
+		}
+
+		var (
+			eval       ConstraintEvaluator
+			evalK      KConstraintEvaluator
+			rowCount   int
+			haveCred   bool
+			havePRF    bool
+			K          *kf.Field
+			boundRows  []int
+			carryRows  []int
+			boundB     int64
+			carryBound int64
+			postBoundsEval  ConstraintEvaluator
+			postBoundsEvalK KConstraintEvaluator
+			splitPostBounds bool
+		)
+		if proof.Theta > 1 {
+			if len(proof.Chi) == 0 {
+				return false, fmt.Errorf("missing Chi for K replay")
+			}
+			k, err := kf.New(ringQ.Modulus[0], proof.Theta, proof.Chi)
+			if err != nil {
+				return false, fmt.Errorf("kfield.New: %w", err)
+			}
+			K = k
+		}
+		// Build post-sign evaluator when A is present.
+		if len(pub.A) > 0 {
+			uCount := len(pub.A[0])
+			cfgPost := PostSignConstraintConfig{
+				Ring:          ringQ,
+				A:             thetaA,
+				B:             thetaB,
+				Bound:         pub.BoundB,
+				PackingNCols:  ncols,
+				PackingSelNTT: packSelNTT,
+				IdxM1:         0,
+				IdxM2:         1,
+				IdxR0:         5,
+				IdxR1:         6,
+				IdxT:          9,
+				IdxUBase:      10,
+				UCount:        uCount,
+				BoundRows:     []int{0, 1, 5, 6},
+				Omega:         omega,
+			}
+			splitPostBounds = set.PRFLayout != nil && len(pub.Tag) > 0
+			if splitPostBounds {
+				eval = cfgPost.PostSignEvaluatorCore()
+				postBoundsEval = cfgPost.PostSignEvaluatorBounds()
+				if proof.Theta > 1 && K != nil {
+					ek, err := cfgPost.PostSignKEvaluatorCore(K)
+					if err != nil {
+						return false, err
+					}
+					evalK = ek
+					bk, err := cfgPost.PostSignKEvaluatorBounds(K)
+					if err != nil {
+						return false, err
+					}
+					postBoundsEvalK = bk
+				}
+			} else {
+				eval = cfgPost.PostSignEvaluator()
+				if proof.Theta > 1 && K != nil {
+					ek, err := cfgPost.PostSignKEvaluator(K)
+					if err != nil {
+						return false, err
+					}
+					evalK = ek
+				}
+			}
+			boundRows = append([]int(nil), cfgPost.BoundRows...)
+			boundB = cfgPost.Bound
+			rowCount = cfgPost.IdxUBase + cfgPost.UCount
+			haveCred = true
+		} else if len(pub.Ac) > 0 || len(pub.Com) > 0 || len(pub.B) > 0 || len(pub.RI0) > 0 || len(pub.RI1) > 0 {
+			cfgEval := CredentialConstraintConfig{
+				Ring:          ringQ,
+				Ac:            thetaAc,
+				B:             thetaB,
+				Com:           thetaCom,
+				RI0:           thetaRI0,
+				RI1:           thetaRI1,
+				Bound:         pub.BoundB,
+				CarryBound:    1,
+				TPublicNTT:    tThetaNTT,
+				PackingNCols:  ncols,
+				PackingSelNTT: packSelNTT,
+				IdxM1:         0,
+				IdxM2:         1,
+				IdxRU0:        2,
+				IdxRU1:        3,
+				IdxR:          4,
+				IdxR0:         5,
+				IdxR1:         6,
+				IdxK0:         7,
+				IdxK1:         8,
+				IdxT:          -1,
+				BoundRows:     []int{0, 1, 2, 3, 4, 5, 6},
+				CarryRows:     []int{7, 8},
+				Omega:         omega,
+			}
+			cfgK := CredentialConstraintConfig{
+				Ring:         ringQ,
+				Ac:           thetaAc,
+				B:            thetaB,
+				Com:          thetaCom,
+				RI0:          thetaRI0,
+				RI1:          thetaRI1,
+				Bound:        pub.BoundB,
+				CarryBound:   1,
+				TPublicNTT:   tThetaNTT,
+				PackingNCols: ncols,
+				IdxM1:        0,
+				IdxM2:        1,
+				IdxRU0:       2,
+				IdxRU1:       3,
+				IdxR:         4,
+				IdxR0:        5,
+				IdxR1:        6,
+				IdxK0:        7,
+				IdxK1:        8,
+				IdxT:         -1,
+				BoundRows:    []int{0, 1, 2, 3, 4, 5, 6},
+				CarryRows:    []int{7, 8},
+				Omega:        omega,
+			}
+			eval = cfgEval.CredentialEvaluator()
+			if proof.Theta > 1 && K != nil {
+				ek, err := cfgK.CredentialKEvaluator(K)
+				if err != nil {
+					return false, err
+				}
+				evalK = ek
+			}
+			boundRows = append([]int(nil), cfgEval.BoundRows...)
+			carryRows = append([]int(nil), cfgEval.CarryRows...)
+			boundB = cfgEval.Bound
+			carryBound = cfgEval.CarryBound
+			rowCount = cfgEval.IdxK1 + 1
+			haveCred = true
+		}
+		// Build PRF evaluator when layout is present.
+		if set.PRFLayout != nil && len(pub.Tag) > 0 {
+			params, err := prf.LoadDefaultParams()
+			if err != nil {
+				return false, fmt.Errorf("load prf params: %w", err)
+			}
+			cfgPRF, err := NewPRFConstraintConfig(ringQ, params, set.PRFLayout, pub.Tag, pub.Nonce, ncols)
+			if err != nil {
+				return false, fmt.Errorf("prf config: %w", err)
+			}
+			evalPRF := cfgPRF.PRFEvaluator()
+			eval = composeEvaluators(eval, evalPRF)
+			if proof.Theta > 1 && K != nil {
+				ek, err := cfgPRF.PRFKEvaluator(K)
+				if err != nil {
+					return false, err
+				}
+				evalK = composeKEvaluators(evalK, ek)
+			}
+			if splitPostBounds && postBoundsEval != nil {
+				eval = composeEvaluators(eval, postBoundsEval)
+				if proof.Theta > 1 && K != nil && postBoundsEvalK != nil {
+					evalK = composeKEvaluators(evalK, postBoundsEvalK)
+				}
+			}
+			traceRows := set.PRFLayout.StartIdx + (set.PRFLayout.RF+set.PRFLayout.RP+1)*(set.PRFLayout.LenKey+set.PRFLayout.LenNonce)
+			if traceRows > rowCount {
+				rowCount = traceRows
+			}
+			havePRF = true
+		}
+		if !haveCred && !havePRF {
+			return false, fmt.Errorf("no evaluators available for replay")
+		}
+		replay := &ConstraintReplay{
+			Eval:       eval,
+			EvalK:      evalK,
+			RowCount:   rowCount,
+			BoundRows:  boundRows,
+			CarryRows:  carryRows,
+			BoundB:     boundB,
+			CarryBound: carryBound,
+		}
+
+		okLin, okEq4, okSum, err := VerifyNIZKWithReplay(proof, replay)
 		return okLin && okEq4 && okSum, err
 	}
 	okLin, okEq4, okSum, err := VerifyNIZK(proof)

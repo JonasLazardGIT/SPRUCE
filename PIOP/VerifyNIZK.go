@@ -20,6 +20,19 @@ import (
 // checks currently cover FS rounds 0–3, LVCS EvalStep2, DECS mask verification,
 // Eq.(4) (via tail openings), and the ΣΩ sum constraints.
 func VerifyNIZK(proof *Proof) (okLin, okEq4, okSum bool, err error) {
+	if proof != nil && len(proof.LabelsDigest) > 0 {
+		return false, false, false, errors.New("VerifyNIZK: credential proofs require verifier-side constraint replay; use VerifyWithConstraints")
+	}
+	return verifyNIZK(proof, nil)
+}
+
+// VerifyNIZKWithReplay runs VerifyNIZK and additionally replays Eq.(4) using
+// the supplied constraint evaluators on the opened rows.
+func VerifyNIZKWithReplay(proof *Proof, replay *ConstraintReplay) (okLin, okEq4, okSum bool, err error) {
+	return verifyNIZK(proof, replay)
+}
+
+func verifyNIZK(proof *Proof, replay *ConstraintReplay) (okLin, okEq4, okSum bool, err error) {
 	if proof == nil {
 		return false, false, false, errors.New("VerifyNIZK: nil proof")
 	}
@@ -83,6 +96,10 @@ func VerifyNIZK(proof *Proof) (okLin, okEq4, okSum bool, err error) {
 	ell := len(proof.Tail)
 	rRows := proof.RowOpening.R
 	eta := proof.RowOpening.Eta
+	// Optional eval-point openings (reserved for future constraint recomputation).
+	// Optional eval-point openings (reserved for future constraint recomputation).
+	unpackUint64Matrix(proof.PvalsEvalBits, proof.PvalsEvalRows, proof.PvalsEvalCols)
+	unpackUint64Matrix(proof.MvalsEvalBits, proof.MvalsEvalRows, proof.MvalsEvalCols)
 
 	// ----------------------------------------------------------------- FS round 0
 	lambda := proof.Lambda
@@ -234,7 +251,7 @@ func VerifyNIZK(proof *Proof) (okLin, okEq4, okSum bool, err error) {
 		transcript4 = [][]byte{
 			rootBytes,
 			gammaBytes,
-			gammaPrimeBytes,
+			bytesFromKScalarMat(proof.GammaPrimeK),
 			bytesFromKScalarMat(proof.GammaAggK),
 			bytesFromUint64Matrix(proof.KPoint),
 			bytesFromUint64Matrix(coeffMatrix),
@@ -334,38 +351,103 @@ func VerifyNIZK(proof *Proof) (okLin, okEq4, okSum bool, err error) {
 		QK = restoreKPolys(proof.QKData)
 		MK = restoreKPolys(proof.MKData)
 	}
-	if !checkEq4OnTailOpen(ringQ, smallFieldK, proof.Theta, proof.Tail, QPolys, QK, MK, FparPolys, FaggPolys, proof.GammaPrime, proof.GammaAgg, proof.GammaPrimeK, proof.GammaAggK, proof.MOpening) {
-		return okLin, false, false, errors.New("VerifyNIZK: Eq.(4) tail check failed")
+	if replay != nil && replay.Eval != nil {
+		// θ>1 replay at K-points (primary) when available.
+		if proof.Theta > 1 {
+			if replay.EvalK == nil {
+				return okLin, false, false, errors.New("VerifyNIZK: missing K evaluator for θ>1 replay")
+			}
+			rowEvals := proof.PvalsKEvalMatrix()
+			vTargets := proof.VTargetsMatrix()
+			witnessCount := replay.RowCount
+			if witnessCount <= 0 {
+				witnessCount = proof.RowLayout.SigCount
+			}
+			if witnessCount <= 0 && proof.PvalsKEvalCols > 0 {
+				witnessCount = proof.PvalsKEvalCols / proof.Theta
+			}
+			if witnessCount <= 0 {
+				witnessCount = len(vTargets[0])
+			}
+			ok, err := EvaluateConstraintsOnKPoints(replay.EvalK, EvalKInput{
+				K:            smallFieldK,
+				KPoints:      proof.KPoint,
+				RowEvals:     rowEvals,
+				VTargets:     vTargets,
+				QK:           QK,
+				MK:           MK,
+				GammaPrimeK:  proof.GammaPrimeK,
+				GammaAggK:    proof.GammaAggK,
+				WitnessCount: witnessCount,
+				Ring:         ringQ,
+				Fpar:         FparPolys,
+				Fagg:         FaggPolys,
+				BoundRows:    replay.BoundRows,
+				CarryRows:    replay.CarryRows,
+				BoundB:       replay.BoundB,
+				CarryBound:   replay.CarryBound,
+			})
+			if err != nil || !ok {
+				if err == nil {
+					err = errors.New("VerifyNIZK: K-point constraint replay failed")
+				}
+				return okLin, false, false, err
+			}
+		}
+
+		// Tail/E′ replay for θ>1 (and θ==1 when provided).
+		rowCount := replay.RowCount
+		if rowCount <= 0 {
+			rowCount = proof.RowLayout.SigCount
+		}
+		ok, err := EvaluateConstraintsOnTailOpen(replay.Eval, EvalTailInput{
+			Tail:      proof.Tail,
+			RowOpen:   proof.RowOpening,
+			MaskOpen:  proof.MOpening,
+			Q:         QPolys,
+			GammaPrime: proof.GammaPrime,
+			GammaAgg:   proof.GammaAgg,
+			Ring:      ringQ,
+			RowCount:  rowCount,
+		})
+		if err != nil || !ok {
+			if err == nil {
+				err = errors.New("VerifyNIZK: tail constraint replay failed")
+			}
+			return okLin, false, false, err
+		}
+		okEq4 = true
+	} else {
+		if !checkEq4OnTailOpen(ringQ, smallFieldK, proof.Theta, proof.Tail, QPolys, QK, MK, FparPolys, FaggPolys, proof.GammaPrime, proof.GammaAgg, proof.GammaPrimeK, proof.GammaAggK, proof.MOpening) {
+			return okLin, false, false, errors.New("VerifyNIZK: Eq.(4) tail check failed")
+		}
+		okEq4 = true
+
+		// Optional Eq.(4) replay on the eval points carried in the proof (theta==1 only).
+		if proof.Theta == 1 && len(proof.EvalPoints) > 0 && len(proof.PvalsEvalBits) > 0 {
+			idxs := make([]int, len(proof.EvalPoints))
+			for i, v := range proof.EvalPoints {
+				idxs[i] = int(v)
+			}
+			Pvals := unpackUint64Matrix(proof.PvalsEvalBits, proof.PvalsEvalRows, proof.PvalsEvalCols)
+			maskVals := unpackUint64Matrix(proof.MaskEvalBits, proof.MaskEvalRows, proof.MaskEvalCols)
+			if len(Pvals) == 0 {
+				return okLin, false, false, errors.New("VerifyNIZK: missing eval-point Pvals")
+			}
+			if len(maskVals) == 0 {
+				// fabricate zero masks if absent
+				maskVals = make([][]uint64, len(idxs))
+			}
+			if !checkEq4OnEvalOpen(q, idxs, maskVals, QPolys, FparPolys, FaggPolys, proof.GammaPrime, proof.GammaAgg) {
+				return okLin, false, false, errors.New("VerifyNIZK: Eq.(4) eval-point check failed")
+			}
+		}
 	}
-	okEq4 = true
 
 	// ----------------------------------------------------------------- ΣΩ check (Eq.7)
-	if proof.Theta > 1 {
-		okSum = VerifyQK_QK(ringQ, smallFieldK, omega, QK)
-		if !okSum {
-			// Debug: check the first non-zero sum residual.
-			for idx := 0; idx < len(QK); idx++ {
-				coeffs := kpolyToCoeffPolys(ringQ, QK[idx])
-				for col := 0; col < len(coeffs[0].Coeffs[0]); col++ {
-					nonzero := false
-					for limb := range coeffs {
-						if coeffs[limb].Coeffs[0][col]%q != 0 {
-							nonzero = true
-							break
-						}
-					}
-					if nonzero {
-						return okLin, okEq4, false, fmt.Errorf("VerifyNIZK: ΣΩ failed at QK[%d] col=%d", idx, col)
-					}
-				}
-			}
-			return okLin, okEq4, false, fmt.Errorf("VerifyNIZK: ΣΩ failed (theta>1)")
-		}
-	} else {
-		okSum = VerifyQ(ringQ, QPolys, omega)
-		if !okSum {
-			return okLin, okEq4, false, fmt.Errorf("VerifyNIZK: ΣΩ failed (theta==1)")
-		}
+	okSum = VerifyQ(ringQ, QPolys, omega)
+	if !okSum {
+		return okLin, okEq4, false, fmt.Errorf("VerifyNIZK: ΣΩ failed")
 	}
 
 	return okLin, okEq4, okSum, nil
@@ -422,6 +504,80 @@ func equalIntSlices(a, b []int) bool {
 	for i := range a {
 		if a[i] != b[i] {
 			return false
+		}
+	}
+	return true
+}
+
+// checkEq4OnEvalOpen replays Eq.(4) on provided evaluation rows (theta==1).
+func checkEq4OnEvalOpen(
+	q uint64,
+	indices []int,
+	Mvals [][]uint64,
+	Q []*ring.Poly,
+	Fpar []*ring.Poly,
+	Fagg []*ring.Poly,
+	gammaF [][]uint64,
+	gammaAgg [][]uint64,
+) bool {
+	if len(indices) == 0 {
+		return false
+	}
+	rho := len(Q)
+	if rho == 0 {
+		return false
+	}
+	// all polys are expected to be in NTT form of the same length.
+	N := 0
+	if len(Q) > 0 && Q[0] != nil && len(Q[0].Coeffs) > 0 {
+		N = len(Q[0].Coeffs[0])
+	}
+	if N == 0 {
+		return false
+	}
+	for col, idx := range indices {
+		if idx < 0 || idx >= N {
+			return false
+		}
+		for i := 0; i < rho; i++ {
+			if Q[i] == nil || len(Q[i].Coeffs) == 0 || idx >= len(Q[i].Coeffs[0]) {
+				return false
+			}
+			lhs := Q[i].Coeffs[0][idx] % q
+			var rhs uint64
+			if i < len(Mvals) && col < len(Mvals[i]) {
+				rhs = Mvals[i][col] % q
+			}
+			if i < len(gammaF) {
+				rowGamma := gammaF[i]
+				for j := range Fpar {
+					if Fpar[j] == nil || len(Fpar[j].Coeffs) == 0 || idx >= len(Fpar[j].Coeffs[0]) {
+						continue
+					}
+					var g uint64
+					if j < len(rowGamma) {
+						g = rowGamma[j] % q
+					}
+					rhs = lvcs.MulAddMod64(rhs, g, Fpar[j].Coeffs[0][idx]%q, q)
+				}
+			}
+			if i < len(gammaAgg) {
+				rowGamma := gammaAgg[i]
+				for j := range Fagg {
+					if Fagg[j] == nil || len(Fagg[j].Coeffs) == 0 || idx >= len(Fagg[j].Coeffs[0]) {
+						continue
+					}
+					var g uint64
+					if j < len(rowGamma) {
+						g = rowGamma[j] % q
+					}
+					rhs = lvcs.MulAddMod64(rhs, g, Fagg[j].Coeffs[0][idx]%q, q)
+				}
+			}
+			if lhs != rhs {
+				fmt.Printf("[eq4-eval] idx=%d i=%d lhs=%d rhs=%d\n", idx, i, lhs, rhs)
+				return false
+			}
 		}
 	}
 	return true

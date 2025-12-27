@@ -47,6 +47,17 @@ func validatePublics(pub PublicInputs) error {
 			return fmt.Errorf("com length %d mismatches ac rows %d", len(pub.Com), len(pub.Ac))
 		}
 	}
+	if len(pub.A) > 0 {
+		rowLen := len(pub.A[0])
+		if rowLen == 0 {
+			return fmt.Errorf("a: empty first row")
+		}
+		for i, row := range pub.A {
+			if len(row) != rowLen {
+				return fmt.Errorf("a: ragged row %d", i)
+			}
+		}
+	}
 	return nil
 }
 

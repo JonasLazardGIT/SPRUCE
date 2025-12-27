@@ -121,6 +121,12 @@ func ProveShowPRF(p *credential.Params, in ShowPRFInputs, opts PIOP.SimOpts) (*P
 	}
 	startIdx := len(baseRows)
 	rowsFull := append(append([]*ring.Poly{}, baseRows...), rows...)
+	rowsFullNTT := make([]*ring.Poly, len(rowsFull))
+	for i := range rowsFull {
+		rowsFullNTT[i] = ringQ.NewPoly()
+		ring.Copy(rowsFull[i], rowsFullNTT[i])
+		ringQ.NTT(rowsFullNTT[i], rowsFullNTT[i])
+	}
 	wit := PIOP.WitnessInputs{
 		M1:  in.M1,
 		M2:  in.M2,
@@ -140,9 +146,17 @@ func ProveShowPRF(p *credential.Params, in ShowPRFInputs, opts PIOP.SimOpts) (*P
 		Tag:    tagPublic,
 		Nonce:  noncePublic,
 	}
-	cs, err := PIOP.BuildPRFConstraintSet(ringQ, prfParams, rowsFull, startIdx, tagPublic, noncePublic)
+	cs, err := PIOP.BuildPRFConstraintSet(ringQ, prfParams, rowsFullNTT, startIdx, tagPublic, noncePublic, ringQ.N)
 	if err != nil {
 		return nil, nil, err
+	}
+	cs.PRFLayout = &PIOP.PRFLayout{
+		StartIdx: startIdx,
+		LenKey:   prfParams.LenKey,
+		LenNonce: prfParams.LenNonce,
+		RF:       prfParams.RF,
+		RP:       prfParams.RP,
+		LenTag:   prfParams.LenTag,
 	}
 	opts.Credential = true
 	if opts.Theta <= 1 {
@@ -171,10 +185,24 @@ func VerifyShowPRF(p *credential.Params, states [][]*ring.Poly, tagPublic [][]in
 	for _, st := range states {
 		rows = append(rows, st...)
 	}
+	rowsNTT := make([]*ring.Poly, len(rows))
+	for i := range rows {
+		rowsNTT[i] = p.RingQ.NewPoly()
+		ring.Copy(rows[i], rowsNTT[i])
+		p.RingQ.NTT(rowsNTT[i], rowsNTT[i])
+	}
 	// startIdx is 0 because rows only contain the PRF trace here.
-	cs, err := PIOP.BuildPRFConstraintSet(p.RingQ, prfParams, rows, 0, tagPublic, nil)
+	cs, err := PIOP.BuildPRFConstraintSet(p.RingQ, prfParams, rowsNTT, 0, tagPublic, nil, p.RingQ.N)
 	if err != nil {
 		return false, err
+	}
+	cs.PRFLayout = &PIOP.PRFLayout{
+		StartIdx: 0,
+		LenKey:   prfParams.LenKey,
+		LenNonce: prfParams.LenNonce,
+		RF:       prfParams.RF,
+		RP:       prfParams.RP,
+		LenTag:   prfParams.LenTag,
 	}
 	pub := PIOP.PublicInputs{
 		BoundB: p.BoundB,

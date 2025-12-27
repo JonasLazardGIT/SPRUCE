@@ -66,23 +66,24 @@ var timingLayerByLabel = map[string]profileLayer{
 }
 
 var sizeLayerByComponent = map[string]profileLayer{
-	"RowOpening":    layerDECS,
-	"MOpening":      layerDECS,
-	"BarSets":       layerPIOP,
-	"VTargets":      layerPIOP,
-	"TailIndices":   layerPIOP,
-	"Chi":           layerPIOP,
-	"Zeta":          layerPIOP,
-	"Digests":       layerPIOP,
-	"Salt":          layerPIOP,
-	"Ctr":           layerPIOP,
-	"Root":          layerDECS,
-	"Gamma":         layerHelper,
-	"EvalPoints":    layerHelper,
-	"ProofHeader":   layerHelper,
-	"OraclePoints":  layerPIOP,
-	"OracleWitness": layerPIOP,
-	"OracleMask":    layerPIOP,
+	"RowOpening":     layerDECS,
+	"MOpening":       layerDECS,
+	"BarSets":        layerPIOP,
+	"VTargets":       layerPIOP,
+	"PvalsKEvalBits": layerPIOP,
+	"TailIndices":    layerPIOP,
+	"Chi":            layerPIOP,
+	"Zeta":           layerPIOP,
+	"Digests":        layerPIOP,
+	"Salt":           layerPIOP,
+	"Ctr":            layerPIOP,
+	"Root":           layerDECS,
+	"Gamma":          layerHelper,
+	"EvalPoints":     layerHelper,
+	"ProofHeader":    layerHelper,
+	"OraclePoints":   layerPIOP,
+	"OracleWitness":  layerPIOP,
+	"OracleMask":     layerPIOP,
 }
 
 func layerName(layer profileLayer) string {
@@ -238,6 +239,7 @@ type SimOpts struct {
 	Lambda     int
 	ChainW     int
 	ChainL     int
+	CoeffPacking bool
 
 	// Mutate allows tests to tweak the witness (w1,w2,w3) before constraints.
 	Mutate func(r *ring.Ring, omega []uint64, ell int, w1 []*ring.Poly, w2 *ring.Poly, w3 []*ring.Poly) `json:"-"`
@@ -261,6 +263,7 @@ func defaultSimOpts() SimOpts {
 		Lambda:     256,
 		ChainW:     4,
 		ChainL:     0, // 0 => auto-compute minimal digits for the bound
+		CoeffPacking: false,
 	}
 }
 
@@ -272,7 +275,7 @@ func (o *SimOpts) applyDefaults() {
 	if o.EllPrime <= 0 {
 		o.EllPrime = def.EllPrime
 	}
-	if o.Ell <= 0 {
+	if o.Ell < 0 {
 		o.Ell = def.Ell
 	}
 	if o.Eta <= 0 {
@@ -381,6 +384,22 @@ type Proof struct {
 	// Credential mode additions: record evaluation domain size and optional truncated omega.
 	NColsUsed  int
 	OmegaTrunc []uint64
+	// Eval-point consistency (optional): FS eval points and packed evaluations of P/M at those points.
+	EvalPoints    []uint64 // |E'|
+	PvalsEvalBits []byte   // packed U20 matrix: |E'| x RowCount
+	MvalsEvalBits []byte   // packed U20 matrix: |E'| x Eta
+	MaskEvalBits  []byte   // packed U20 matrix: |E'| x rho (PACS masks)
+	PvalsEvalRows int
+	PvalsEvalCols int
+	MvalsEvalRows int
+	MvalsEvalCols int
+	MaskEvalRows  int
+	MaskEvalCols  int
+	// K-point row evaluations (theta>1): packed matrix |K'| x (witnessCount*theta).
+	PvalsKEvalBits     []byte
+	PvalsKEvalRows     int
+	PvalsKEvalCols     int
+	PvalsKEvalBitWidth uint8
 	// Optional PRF layout metadata for showing proofs.
 	PRFLayout *PRFLayout
 }
@@ -422,6 +441,35 @@ func (p *Proof) setVTargets(mat [][]uint64) {
 	p.VTargetsCols = cols
 	p.VTargetsBitWidth = uint8(width)
 	p.VTargets = nil
+}
+
+func (p *Proof) setPvalsKEval(mat [][]uint64) {
+	if len(mat) == 0 {
+		p.PvalsKEvalBits = nil
+		p.PvalsKEvalRows = 0
+		p.PvalsKEvalCols = 0
+		p.PvalsKEvalBitWidth = 0
+		return
+	}
+	bits, rows, cols, width := decs.PackUintMatrix(mat)
+	p.PvalsKEvalBits = bits
+	p.PvalsKEvalRows = rows
+	p.PvalsKEvalCols = cols
+	p.PvalsKEvalBitWidth = uint8(width)
+}
+
+func (p *Proof) PvalsKEvalMatrix() [][]uint64 {
+	if len(p.PvalsKEvalBits) == 0 {
+		return nil
+	}
+	mat, rows, cols, width, err := decs.UnpackUintMatrix(p.PvalsKEvalBits)
+	if err != nil {
+		return nil
+	}
+	p.PvalsKEvalRows = rows
+	p.PvalsKEvalCols = cols
+	p.PvalsKEvalBitWidth = uint8(width)
+	return mat
 }
 
 func (p *Proof) ensureVTargetsPacked() {
@@ -604,56 +652,71 @@ func computeDQFromConstraintDegrees(d, dPrime, s, ellPrime int) int {
 // ProofSnapshot is a JSON-friendly representation of Proof retaining protocol
 // material in plain slices so it can be serialised without ring-specific types.
 type ProofSnapshot struct {
-	Root             []byte
-	Salt             []byte
-	Ctr              [4]uint64
-	Digests          [][]byte
-	LabelsDigest     []byte
-	NColsUsed        int
-	OmegaTrunc       []uint64
-	Lambda           int
-	Kappa            [4]int
-	Theta            int
-	Chi              []uint64
-	Zeta             []uint64
-	MOpening         *decs.DECSOpening
-	Tail             []int
-	VTargetsBits     []byte
-	VTargetsRows     int
-	VTargetsCols     int
-	VTargetsBitWidth uint8
-	BarSetsBits      []byte
-	BarSetsRows      int
-	BarSetsCols      int
-	BarSetsBitWidth  uint8
-	CoeffMatrix      [][]uint64
-	KPoint           [][]uint64
-	GammaPrimeK      [][][]uint64
-	GammaAggK        [][][]uint64
-	GammaPrime       [][]uint64
-	GammaAgg         [][]uint64
-	R                [][]uint64
-	FparNTT          [][]uint64
-	FaggNTT          [][]uint64
-	QNTT             [][]uint64
-	MKData           []KPolySnapshot
-	QKData           []KPolySnapshot
-	Gamma            [][]uint64
-	GammaK           [][][]uint64
-	RowLayout        RowLayout
-	MaskRowOffset    int
-	MaskRowCount     int
-	MaskDegreeBound  int
-	RoundCounters    [4]uint64
-	RowOpening       *decs.DECSOpening
-	TailTranscript   []byte
+	Root         []byte
+	Salt         []byte
+	Ctr          [4]uint64
+	Digests      [][]byte
+	LabelsDigest []byte
+	NColsUsed    int
+	OmegaTrunc   []uint64
+	// Eval-point consistency (optional)
+	EvalPoints         []uint64
+	PvalsEvalBits      []byte
+	MvalsEvalBits      []byte
+	MaskEvalBits       []byte
+	PvalsEvalRows      int
+	PvalsEvalCols      int
+	MvalsEvalRows      int
+	MvalsEvalCols      int
+	MaskEvalRows       int
+	MaskEvalCols       int
+	PvalsKEvalBits     []byte
+	PvalsKEvalRows     int
+	PvalsKEvalCols     int
+	PvalsKEvalBitWidth uint8
+	Lambda             int
+	Kappa              [4]int
+	Theta              int
+	Chi                []uint64
+	Zeta               []uint64
+	MOpening           *decs.DECSOpening
+	Tail               []int
+	VTargetsBits       []byte
+	VTargetsRows       int
+	VTargetsCols       int
+	VTargetsBitWidth   uint8
+	BarSetsBits        []byte
+	BarSetsRows        int
+	BarSetsCols        int
+	BarSetsBitWidth    uint8
+	CoeffMatrix        [][]uint64
+	KPoint             [][]uint64
+	GammaPrimeK        [][][]uint64
+	GammaAggK          [][][]uint64
+	GammaPrime         [][]uint64
+	GammaAgg           [][]uint64
+	R                  [][]uint64
+	FparNTT            [][]uint64
+	FaggNTT            [][]uint64
+	QNTT               [][]uint64
+	MKData             []KPolySnapshot
+	QKData             []KPolySnapshot
+	Gamma              [][]uint64
+	GammaK             [][][]uint64
+	RowLayout          RowLayout
+	MaskRowOffset      int
+	MaskRowCount       int
+	MaskDegreeBound    int
+	RoundCounters      [4]uint64
+	RowOpening         *decs.DECSOpening
+	TailTranscript     []byte
 }
 
 // RunOnce executes a single serialized PACS simulation and captures metrics.
 func RunOnce(o SimOpts) (SimReport, error) {
 	o.applyDefaults()
 	if o.Credential {
-		return runCredential(o)
+		return SimReport{}, fmt.Errorf("credential mode is not supported via RunOnce; use the credential builder path instead")
 	}
 	return runPACS(o)
 }
@@ -1185,6 +1248,27 @@ func bytesFromUint64Matrix(mat [][]uint64) []byte {
 	return bytesU64Mat(mat)
 }
 
+// unpackUint64Matrix reconstructs a matrix from a flat little-endian byte slice.
+// rows/cols must be provided; returns nil if lengths are inconsistent.
+func unpackUint64Matrix(data []byte, rows, cols int) [][]uint64 {
+	if rows <= 0 || cols <= 0 {
+		return nil
+	}
+	need := rows * cols * 8
+	if len(data) != need {
+		return nil
+	}
+	out := make([][]uint64, rows)
+	for r := 0; r < rows; r++ {
+		row := make([]uint64, cols)
+		for c := 0; c < cols; c++ {
+			row[c] = binary.LittleEndian.Uint64(data[(r*cols+c)*8:])
+		}
+		out[r] = row
+	}
+	return out
+}
+
 func sampleDistinctFieldElemsAvoid(count int, q uint64, rng *fsRNG, forbid []uint64) []uint64 {
 	res := make([]uint64, 0, count)
 	seen := make(map[uint64]struct{}, count+len(forbid))
@@ -1465,6 +1549,7 @@ func estimateProofSize(proof *Proof) int {
 	// CoeffMatrix (C) re-derived on verifier
 	sum += len(proof.VTargetsBits)
 	sum += len(proof.BarSetsBits)
+	sum += len(proof.PvalsKEvalBits)
 	sum += sizeDECSOpening(proof.RowOpening)
 	return sum
 }
@@ -1485,7 +1570,10 @@ func proofSizeBreakdown(proof *Proof) (map[string]int, int) {
 		digSum += len(d)
 	}
 	sizes["Digests"] = digSum
-	// EvalPoints and KPoint re-derived on verifier; not serialized
+	sizes["EvalPoints"] = len(proof.EvalPoints) * 8
+	sizes["PvalsEvalBits"] = len(proof.PvalsEvalBits)
+	sizes["MvalsEvalBits"] = len(proof.MvalsEvalBits)
+	sizes["MaskEvalBits"] = len(proof.MaskEvalBits)
 	sizes["Chi"] = len(proof.Chi) * 8
 	sizes["Zeta"] = len(proof.Zeta) * 8
 	sizes["MOpening"] = sizeDECSOpening(proof.MOpening)
@@ -1493,6 +1581,7 @@ func proofSizeBreakdown(proof *Proof) (map[string]int, int) {
 	// C re-derived on verifier
 	sizes["VTargets"] = len(proof.VTargetsBits)
 	sizes["BarSets"] = len(proof.BarSetsBits)
+	sizes["PvalsKEvalBits"] = len(proof.PvalsKEvalBits)
 	sizes["RowOpening"] = sizeDECSOpening(proof.RowOpening)
 	total := 0
 	for _, v := range sizes {
@@ -1560,49 +1649,63 @@ func (p *Proof) Snapshot() ProofSnapshot {
 		digests[i] = append([]byte(nil), d...)
 	}
 	return ProofSnapshot{
-		Root:             rootCopy,
-		Salt:             append([]byte(nil), p.Salt...),
-		Ctr:              p.Ctr,
-		Digests:          digests,
-		LabelsDigest:     append([]byte(nil), p.LabelsDigest...),
-		NColsUsed:        p.NColsUsed,
-		OmegaTrunc:       append([]uint64(nil), p.OmegaTrunc...),
-		Lambda:           p.Lambda,
-		Kappa:            p.Kappa,
-		Theta:            p.Theta,
-		Chi:              append([]uint64(nil), p.Chi...),
-		Zeta:             append([]uint64(nil), p.Zeta...),
-		MOpening:         cloneDECSOpening(p.MOpening),
-		Tail:             append([]int(nil), p.Tail...),
-		VTargetsBits:     append([]byte(nil), p.VTargetsBits...),
-		VTargetsRows:     p.VTargetsRows,
-		VTargetsCols:     p.VTargetsCols,
-		VTargetsBitWidth: p.VTargetsBitWidth,
-		BarSetsBits:      append([]byte(nil), p.BarSetsBits...),
-		BarSetsRows:      p.BarSetsRows,
-		BarSetsCols:      p.BarSetsCols,
-		BarSetsBitWidth:  p.BarSetsBitWidth,
-		CoeffMatrix:      copyMatrix(p.CoeffMatrix),
-		KPoint:           copyMatrix(p.KPoint),
-		GammaPrimeK:      kMatrixTo3D(p.GammaPrimeK),
-		GammaAggK:        kMatrixTo3D(p.GammaAggK),
-		GammaPrime:       copyMatrix(p.GammaPrime),
-		GammaAgg:         copyMatrix(p.GammaAgg),
-		R:                copyMatrix(p.R),
-		FparNTT:          copyMatrix(p.FparNTT),
-		FaggNTT:          copyMatrix(p.FaggNTT),
-		QNTT:             copyMatrix(p.QNTT),
-		MKData:           copyKPolySnapshots(p.MKData),
-		QKData:           copyKPolySnapshots(p.QKData),
-		Gamma:            copyMatrix(p.Gamma),
-		GammaK:           kMatrixTo3D(p.GammaK),
-		RowLayout:        p.RowLayout,
-		MaskRowOffset:    p.MaskRowOffset,
-		MaskRowCount:     p.MaskRowCount,
-		MaskDegreeBound:  p.MaskDegreeBound,
-		RoundCounters:    p.RoundCounters,
-		RowOpening:       cloneDECSOpening(p.RowOpening),
-		TailTranscript:   append([]byte(nil), p.TailTranscript...),
+		Root:               rootCopy,
+		Salt:               append([]byte(nil), p.Salt...),
+		Ctr:                p.Ctr,
+		Digests:            digests,
+		LabelsDigest:       append([]byte(nil), p.LabelsDigest...),
+		NColsUsed:          p.NColsUsed,
+		OmegaTrunc:         append([]uint64(nil), p.OmegaTrunc...),
+		EvalPoints:         append([]uint64(nil), p.EvalPoints...),
+		PvalsEvalBits:      append([]byte(nil), p.PvalsEvalBits...),
+		MvalsEvalBits:      append([]byte(nil), p.MvalsEvalBits...),
+		MaskEvalBits:       append([]byte(nil), p.MaskEvalBits...),
+		PvalsEvalRows:      p.PvalsEvalRows,
+		PvalsEvalCols:      p.PvalsEvalCols,
+		MvalsEvalRows:      p.MvalsEvalRows,
+		MvalsEvalCols:      p.MvalsEvalCols,
+		MaskEvalRows:       p.MaskEvalRows,
+		MaskEvalCols:       p.MaskEvalCols,
+		PvalsKEvalBits:     append([]byte(nil), p.PvalsKEvalBits...),
+		PvalsKEvalRows:     p.PvalsKEvalRows,
+		PvalsKEvalCols:     p.PvalsKEvalCols,
+		PvalsKEvalBitWidth: p.PvalsKEvalBitWidth,
+		Lambda:             p.Lambda,
+		Kappa:              p.Kappa,
+		Theta:              p.Theta,
+		Chi:                append([]uint64(nil), p.Chi...),
+		Zeta:               append([]uint64(nil), p.Zeta...),
+		MOpening:           cloneDECSOpening(p.MOpening),
+		Tail:               append([]int(nil), p.Tail...),
+		VTargetsBits:       append([]byte(nil), p.VTargetsBits...),
+		VTargetsRows:       p.VTargetsRows,
+		VTargetsCols:       p.VTargetsCols,
+		VTargetsBitWidth:   p.VTargetsBitWidth,
+		BarSetsBits:        append([]byte(nil), p.BarSetsBits...),
+		BarSetsRows:        p.BarSetsRows,
+		BarSetsCols:        p.BarSetsCols,
+		BarSetsBitWidth:    p.BarSetsBitWidth,
+		CoeffMatrix:        copyMatrix(p.CoeffMatrix),
+		KPoint:             copyMatrix(p.KPoint),
+		GammaPrimeK:        kMatrixTo3D(p.GammaPrimeK),
+		GammaAggK:          kMatrixTo3D(p.GammaAggK),
+		GammaPrime:         copyMatrix(p.GammaPrime),
+		GammaAgg:           copyMatrix(p.GammaAgg),
+		R:                  copyMatrix(p.R),
+		FparNTT:            copyMatrix(p.FparNTT),
+		FaggNTT:            copyMatrix(p.FaggNTT),
+		QNTT:               copyMatrix(p.QNTT),
+		MKData:             copyKPolySnapshots(p.MKData),
+		QKData:             copyKPolySnapshots(p.QKData),
+		Gamma:              copyMatrix(p.Gamma),
+		GammaK:             kMatrixTo3D(p.GammaK),
+		RowLayout:          p.RowLayout,
+		MaskRowOffset:      p.MaskRowOffset,
+		MaskRowCount:       p.MaskRowCount,
+		MaskDegreeBound:    p.MaskDegreeBound,
+		RoundCounters:      p.RoundCounters,
+		RowOpening:         cloneDECSOpening(p.RowOpening),
+		TailTranscript:     append([]byte(nil), p.TailTranscript...),
 	}
 }
 
@@ -1611,40 +1714,54 @@ func (ps ProofSnapshot) Restore() *Proof {
 	var root [16]byte
 	copy(root[:], ps.Root)
 	proof := &Proof{
-		Root:            root,
-		Salt:            append([]byte(nil), ps.Salt...),
-		Ctr:             ps.Ctr,
-		NColsUsed:       ps.NColsUsed,
-		OmegaTrunc:      append([]uint64(nil), ps.OmegaTrunc...),
-		Lambda:          ps.Lambda,
-		Kappa:           ps.Kappa,
-		Theta:           ps.Theta,
-		LabelsDigest:    append([]byte(nil), ps.LabelsDigest...),
-		Chi:             append([]uint64(nil), ps.Chi...),
-		Zeta:            append([]uint64(nil), ps.Zeta...),
-		Tail:            append([]int(nil), ps.Tail...),
-		CoeffMatrix:     copyMatrix(ps.CoeffMatrix),
-		KPoint:          copyMatrix(ps.KPoint),
-		RowOpening:      cloneDECSOpening(ps.RowOpening),
-		MOpening:        cloneDECSOpening(ps.MOpening),
-		GammaPrimeK:     k3DToMatrix(ps.GammaPrimeK),
-		GammaAggK:       k3DToMatrix(ps.GammaAggK),
-		GammaPrime:      copyMatrix(ps.GammaPrime),
-		GammaAgg:        copyMatrix(ps.GammaAgg),
-		R:               copyMatrix(ps.R),
-		FparNTT:         copyMatrix(ps.FparNTT),
-		FaggNTT:         copyMatrix(ps.FaggNTT),
-		QNTT:            copyMatrix(ps.QNTT),
-		MKData:          copyKPolySnapshots(ps.MKData),
-		QKData:          copyKPolySnapshots(ps.QKData),
-		Gamma:           copyMatrix(ps.Gamma),
-		GammaK:          k3DToMatrix(ps.GammaK),
-		RowLayout:       ps.RowLayout,
-		MaskRowOffset:   ps.MaskRowOffset,
-		MaskRowCount:    ps.MaskRowCount,
-		MaskDegreeBound: ps.MaskDegreeBound,
-		RoundCounters:   ps.RoundCounters,
-		TailTranscript:  append([]byte(nil), ps.TailTranscript...),
+		Root:               root,
+		Salt:               append([]byte(nil), ps.Salt...),
+		Ctr:                ps.Ctr,
+		NColsUsed:          ps.NColsUsed,
+		OmegaTrunc:         append([]uint64(nil), ps.OmegaTrunc...),
+		EvalPoints:         append([]uint64(nil), ps.EvalPoints...),
+		PvalsEvalBits:      append([]byte(nil), ps.PvalsEvalBits...),
+		MvalsEvalBits:      append([]byte(nil), ps.MvalsEvalBits...),
+		MaskEvalBits:       append([]byte(nil), ps.MaskEvalBits...),
+		PvalsEvalRows:      ps.PvalsEvalRows,
+		PvalsEvalCols:      ps.PvalsEvalCols,
+		MvalsEvalRows:      ps.MvalsEvalRows,
+		MvalsEvalCols:      ps.MvalsEvalCols,
+		MaskEvalRows:       ps.MaskEvalRows,
+		MaskEvalCols:       ps.MaskEvalCols,
+		PvalsKEvalBits:     append([]byte(nil), ps.PvalsKEvalBits...),
+		PvalsKEvalRows:     ps.PvalsKEvalRows,
+		PvalsKEvalCols:     ps.PvalsKEvalCols,
+		PvalsKEvalBitWidth: ps.PvalsKEvalBitWidth,
+		Lambda:             ps.Lambda,
+		Kappa:              ps.Kappa,
+		Theta:              ps.Theta,
+		LabelsDigest:       append([]byte(nil), ps.LabelsDigest...),
+		Chi:                append([]uint64(nil), ps.Chi...),
+		Zeta:               append([]uint64(nil), ps.Zeta...),
+		Tail:               append([]int(nil), ps.Tail...),
+		CoeffMatrix:        copyMatrix(ps.CoeffMatrix),
+		KPoint:             copyMatrix(ps.KPoint),
+		RowOpening:         cloneDECSOpening(ps.RowOpening),
+		MOpening:           cloneDECSOpening(ps.MOpening),
+		GammaPrimeK:        k3DToMatrix(ps.GammaPrimeK),
+		GammaAggK:          k3DToMatrix(ps.GammaAggK),
+		GammaPrime:         copyMatrix(ps.GammaPrime),
+		GammaAgg:           copyMatrix(ps.GammaAgg),
+		R:                  copyMatrix(ps.R),
+		FparNTT:            copyMatrix(ps.FparNTT),
+		FaggNTT:            copyMatrix(ps.FaggNTT),
+		QNTT:               copyMatrix(ps.QNTT),
+		MKData:             copyKPolySnapshots(ps.MKData),
+		QKData:             copyKPolySnapshots(ps.QKData),
+		Gamma:              copyMatrix(ps.Gamma),
+		GammaK:             k3DToMatrix(ps.GammaK),
+		RowLayout:          ps.RowLayout,
+		MaskRowOffset:      ps.MaskRowOffset,
+		MaskRowCount:       ps.MaskRowCount,
+		MaskDegreeBound:    ps.MaskDegreeBound,
+		RoundCounters:      ps.RoundCounters,
+		TailTranscript:     append([]byte(nil), ps.TailTranscript...),
 	}
 	proof.VTargetsBits = append([]byte(nil), ps.VTargetsBits...)
 	proof.VTargetsRows = ps.VTargetsRows
@@ -1828,65 +1945,83 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 		return nil, false, false, false
 	}
 
-	// --- NEW: remake signature rows as coefficient-packing rows over Ω -------------
-	ell := o.Ell
 	// length of signature block
+	ell := o.Ell
 	mSig := len(w1) - len(B0m) - len(B0r)
 	uStart := mSig
 	uEnd := uStart + len(B0m)
 	x0Start := uEnd
 	x0End := x0Start + len(B0r)
-
-	// Rebuild top mSig rows: P_t(ω_j) = a_{t,j} (coefficient packing + blinding)
-	for t := 0; t < mSig; t++ {
-		coeff := ringQ.NewPoly()
-		ringQ.InvNTT(w1[t], coeff) // coefficient vector of the ring poly
-		vals := make([]uint64, len(omega))
-		for j := 0; j < len(omega); j++ {
-			// **Coefficient packing**: per-column value is the coefficient a_{t,j}
-			vals[j] = coeff.Coeffs[0][j] % q
-		}
-		w1[t] = buildValueRow(ringQ, vals, omega, ell) // deg ≤ s+ell-1 row poly
-	}
 	msgCount := uEnd - uStart
 	rndCount := x0End - x0Start
 
 	msgSource := make([]*ring.Poly, msgCount)
-	for i := 0; i < msgCount; i++ {
-		msgSource[i] = w1[uStart+i].CopyNew()
-	}
 	rndSource := make([]*ring.Poly, rndCount)
-	for i := 0; i < rndCount; i++ {
-		rndSource[i] = w1[x0Start+i].CopyNew()
+	if o.CoeffPacking {
+		// Remake signature rows as coefficient-packing rows over Ω.
+		for t := 0; t < mSig; t++ {
+			coeff := ringQ.NewPoly()
+			ringQ.InvNTT(w1[t], coeff) // coefficient vector of the ring poly
+			vals := make([]uint64, len(omega))
+			for j := 0; j < len(omega); j++ {
+				// **Coefficient packing**: per-column value is the coefficient a_{t,j}
+				vals[j] = coeff.Coeffs[0][j] % q
+			}
+			w1[t] = buildValueRow(ringQ, vals, omega, ell) // deg ≤ s+ell-1 row poly
+		}
+
+		// Repack x1 (w2) as a coefficient-packed row over Ω.
+		{
+			coeff := ringQ.NewPoly()
+			ringQ.InvNTT(w2, coeff)
+			vals := make([]uint64, len(omega))
+			for j := 0; j < len(omega); j++ {
+				vals[j] = coeff.Coeffs[0][j] % q
+			}
+			w2 = buildValueRow(ringQ, vals, omega, ell)
+		}
+
+		// Rebuild message and x0 rows as coefficient-packed rows over Ω.
+		for i := 0; i < len(B0m); i++ {
+			tmp := ringQ.NewPoly()
+			ringQ.InvNTT(w1[uStart+i], tmp)
+			vals := make([]uint64, len(omega))
+			for j := 0; j < len(omega); j++ {
+				vals[j] = tmp.Coeffs[0][j] % q
+			}
+			w1[uStart+i] = buildValueRow(ringQ, vals, omega, ell)
+		}
+		off := x0Start
+		for i := 0; i < len(B0r); i++ {
+			tmp := ringQ.NewPoly()
+			ringQ.InvNTT(w1[off+i], tmp)
+			vals := make([]uint64, len(omega))
+			for j := 0; j < len(omega); j++ {
+				vals[j] = tmp.Coeffs[0][j] % q
+			}
+			w1[off+i] = buildValueRow(ringQ, vals, omega, ell)
+		}
+
+		for i := 0; i < msgCount; i++ {
+			msgSource[i] = w1[uStart+i].CopyNew()
+		}
+		for i := 0; i < rndCount; i++ {
+			rndSource[i] = w1[x0Start+i].CopyNew()
+		}
+
+		// Recompute w3 = w1 * w2 using the updated packing rows.
+		for i := 0; i < len(w1); i++ {
+			ringQ.MulCoeffs(w1[i], w2, w3[i])
+		}
+	} else {
+		for i := 0; i < msgCount; i++ {
+			msgSource[i] = w1[uStart+i].CopyNew()
+		}
+		for i := 0; i < rndCount; i++ {
+			rndSource[i] = w1[x0Start+i].CopyNew()
+		}
 	}
 
-	// Rebuild message and x0 rows as **column-constant** packing rows.
-	for i := 0; i < len(B0m); i++ {
-		tmp := ringQ.NewPoly()
-		ringQ.InvNTT(w1[uStart+i], tmp)
-		c := tmp.Coeffs[0][0] % q
-		vals := make([]uint64, len(omega))
-		for j := range vals {
-			vals[j] = c
-		}
-		w1[uStart+i] = buildValueRow(ringQ, vals, omega, ell)
-	}
-	off := x0Start
-	for i := 0; i < len(B0r); i++ {
-		tmp := ringQ.NewPoly()
-		ringQ.InvNTT(w1[off+i], tmp)
-		c := tmp.Coeffs[0][0] % q
-		vals := make([]uint64, len(omega))
-		for j := range vals {
-			vals[j] = c
-		}
-		w1[off+i] = buildValueRow(ringQ, vals, omega, ell)
-	}
-
-	// Recompute w3 = w1 * w2 using the updated packing rows.
-	for i := 0; i < len(w1); i++ {
-		ringQ.MulCoeffs(w1[i], w2, w3[i])
-	}
 	origW1Len := len(w1)
 	rowLayout := RowLayout{SigCount: mSig, MsgCount: msgCount, RndCount: rndCount}
 	if o.Mutate != nil {
@@ -2007,7 +2142,12 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 
 	// ------------------------------------------------------- PACS batching (moved earlier to enable mask config)
 	FparProd := buildFpar(ringQ, w1[:origW1Len], w2, w3)
-	theta := BuildThetaPrimeSet(ringQ, A, b1, B0c, B0m, B0r, omega)
+	var theta *ThetaPrime
+	if o.CoeffPacking {
+		theta = BuildThetaPrimeSetCoeff(ringQ, A, b1, B0c, B0m, B0r, omega)
+	} else {
+		theta = BuildThetaPrimeSet(ringQ, A, b1, B0c, B0m, B0r, omega)
+	}
 	integerRows := buildFparInteger(ringQ, w1[:origW1Len], w2, theta, mSig)
 
 	FparInt := append([]*ring.Poly{}, integerRows...)
@@ -2042,6 +2182,7 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 		openMaskSaved     *lvcs.Opening
 		openTailSaved     *lvcs.Opening
 		combinedOpenSaved *decs.DECSOpening
+		maskEval          [][]uint64
 		FparAtE           [][]uint64
 		FaggAtE           [][]uint64
 		QAtE              [][]uint64
@@ -2457,7 +2598,7 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 		// Pack row opening for compact serialization
 		decs.PackOpening(proof.RowOpening)
 
-		maskEval := evalPolySetAtIndices(ringQ, layoutMasks, E)
+		maskEval = evalPolySetAtIndices(ringQ, layoutMasks, E)
 		maskOpen := makeMaskTailOpening(E, maskEval)
 		verifyMaskOpen = cloneDECSOpening(maskOpen)
 		proof.MOpening = cloneDECSOpening(maskOpen)
@@ -2479,6 +2620,33 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 		FaggAtE = evalPolySetAtIndices(ringQ, FaggAll, E)
 		QAtE = evalPolySetAtIndices(ringQ, Q, E)
 		okEq4Tail = checkEq4OnTailOpen(ringQ, smallFieldK, o.Theta, E, Q, QK, MK, FparAll, FaggAll, GammaPrime, GammaAgg, GammaPrimeK, GammaAggK, proof.MOpening)
+	}
+	// Persist eval-point openings for verifier-side recomputation if needed.
+	if combinedOpen != nil {
+		// Use the explicit mask indices and tail indices we sampled (maskIdx, E).
+		evalIdx := append([]int(nil), maskIdx...)
+		evalIdx = append(evalIdx, E...)
+		proof.EvalPoints = make([]uint64, len(evalIdx))
+		for i, v := range evalIdx {
+			proof.EvalPoints[i] = uint64(v)
+		}
+		// Evaluate PACS masks on the same indices to enable Eq.(4) replay.
+		me := evalPolySetAtIndices(ringQ, layoutMasks, evalIdx)
+		if len(me) > 0 {
+			proof.MaskEvalRows = len(me)
+			proof.MaskEvalCols = len(me[0])
+			proof.MaskEvalBits = bytesFromUint64Matrix(me)
+		}
+		if len(combinedOpen.Pvals) > 0 {
+			proof.PvalsEvalRows = len(combinedOpen.Pvals)
+			proof.PvalsEvalCols = len(combinedOpen.Pvals[0])
+			proof.PvalsEvalBits = bytesFromUint64Matrix(combinedOpen.Pvals)
+		}
+		if len(combinedOpen.Mvals) > 0 {
+			proof.MvalsEvalRows = len(combinedOpen.Mvals)
+			proof.MvalsEvalCols = len(combinedOpen.Mvals[0])
+			proof.MvalsEvalBits = bytesFromUint64Matrix(combinedOpen.Mvals)
+		}
 	}
 
 	proofSize := estimateProofSize(proof)
@@ -2609,11 +2777,7 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 		fmt.Printf("[debug theta>1] okEq4Omega=%v okEq4K=%v okEq4Tail=%v okFirstLimbOmega=%v\n", okEq4Omega, okEq4K, okEq4Tail, okFirstLimbOmega)
 	}
 	var okSum bool
-	if o.Theta > 1 {
-		okSum = VerifyQK_QK(ringQ, smallFieldK, omega, QK)
-	} else {
-		okSum = VerifyQ(ringQ, Q, omega)
-	}
+	okSum = VerifyQ(ringQ, Q, omega)
 	leafCount := o.NLeaves
 	if leafCount <= 0 {
 		leafCount = int(ringQ.N)
@@ -2743,6 +2907,51 @@ func evalPolysOnOmega(r *ring.Ring, polys []*ring.Poly, omega []uint64) [][]uint
 	return rows
 }
 
+// evalRowsAtKPoints evaluates each polynomial at the provided K-points and
+// returns a matrix with |K'| rows and (len(polys)*theta) columns, where each
+// row stores the concatenated limbs of the evaluations.
+// The caller must ensure polys are in coefficient domain (or pass inNTT=true).
+func evalRowsAtKPoints(r *ring.Ring, K *kf.Field, polys []*ring.Poly, evals []kf.Elem, inNTT bool) [][]uint64 {
+	if r == nil || K == nil || len(polys) == 0 || len(evals) == 0 {
+		return nil
+	}
+	q := r.Modulus[0]
+	theta := K.Theta
+	coeffs := make([][]uint64, len(polys))
+	tmp := r.NewPoly()
+	for i, p := range polys {
+		if p == nil {
+			continue
+		}
+		if inNTT {
+			r.InvNTT(p, tmp)
+			coeffs[i] = append([]uint64(nil), tmp.Coeffs[0]...)
+		} else {
+			coeffs[i] = append([]uint64(nil), p.Coeffs[0]...)
+		}
+		for j := range coeffs[i] {
+			coeffs[i][j] %= q
+		}
+	}
+	out := make([][]uint64, len(evals))
+	for idx, e := range evals {
+		row := make([]uint64, len(polys)*theta)
+		offset := 0
+		for i := range polys {
+			val := K.Zero()
+			if coeffs[i] != nil {
+				val = K.EvalFPolyAtK(coeffs[i], e)
+			}
+			for limb := 0; limb < theta; limb++ {
+				row[offset+limb] = val.Limb[limb] % q
+			}
+			offset += theta
+		}
+		out[idx] = row
+	}
+	return out
+}
+
 func buildKPointCoeffMatrix(
 	r *ring.Ring, K *kf.Field, omega []uint64, rows [][]uint64, e kf.Elem, muDenomInv kf.Elem,
 	maskRowOffset, maskRowCount int,
@@ -2823,6 +3032,30 @@ func buildKPointCoeffMatrix(
 	return coeffs
 }
 
+// buildKPointCoeffMatrixRows builds a theta-by-rows coefficient block for a
+// single K-point when the rows already correspond to witness polynomials.
+// This is a row-oriented alternative to buildKPointCoeffMatrix; it produces
+// deterministic coefficients derived from the K-point limbs so the verifier
+// can replay the same transcript.
+func buildKPointCoeffMatrixRows(r *ring.Ring, K *kf.Field, totalRows int, e kf.Elem) [][]uint64 {
+	if r == nil || K == nil || totalRows <= 0 {
+		return nil
+	}
+	q := r.Modulus[0]
+	theta := K.Theta
+	coeffs := make([][]uint64, theta)
+	for coord := 0; coord < theta; coord++ {
+		row := make([]uint64, totalRows)
+		base := e.Limb[coord] % q
+		step := uint64(coord + 1)
+		for j := 0; j < totalRows; j++ {
+			row[j] = (base + step*uint64(j+1)) % q
+		}
+		coeffs[coord] = row
+	}
+	return coeffs
+}
+
 func elemEqual(f *kf.Field, a, b kf.Elem) bool {
 	if len(a.Limb) != len(b.Limb) {
 		return false
@@ -2885,6 +3118,32 @@ func evalPolySetAtIndices(r *ring.Ring, polys []*ring.Poly, indices []int) [][]u
 	for i := range polys {
 		row := make([]uint64, len(indices))
 		coeffs := polys[i].Coeffs[0]
+		for j, idx := range indices {
+			pos := idx % N
+			if pos < 0 {
+				pos += N
+			}
+			row[j] = coeffs[pos] % q
+		}
+		out[i] = row
+	}
+	return out
+}
+
+// evalPolySetAtIndicesCoeff returns coefficient-domain values at the given
+// indices. It InvNTTs each poly before sampling indices.
+func evalPolySetAtIndicesCoeff(r *ring.Ring, polys []*ring.Poly, indices []int) [][]uint64 {
+	if len(polys) == 0 || len(indices) == 0 {
+		return nil
+	}
+	N := int(r.N)
+	q := r.Modulus[0]
+	out := make([][]uint64, len(polys))
+	tmp := r.NewPoly()
+	for i := range polys {
+		row := make([]uint64, len(indices))
+		r.InvNTT(polys[i], tmp)
+		coeffs := tmp.Coeffs[0]
 		for j, idx := range indices {
 			pos := idx % N
 			if pos < 0 {
@@ -3207,25 +3466,6 @@ func checkEq4OnTailOpen(
 	}
 	if len(posByIdx) == 0 && theta > 1 {
 		fmt.Printf("[debug tail] empty opening entries (tail len=%d)\n", len(tail))
-	}
-	// Precompute coefficient-domain views of Fpar/Fagg to align with QK construction.
-	coeffFpar := make([]*ring.Poly, len(Fpar))
-	for i := range Fpar {
-		if Fpar[i] == nil {
-			continue
-		}
-		tmp := r.NewPoly()
-		r.InvNTT(Fpar[i], tmp)
-		coeffFpar[i] = tmp
-	}
-	coeffFagg := make([]*ring.Poly, len(Fagg))
-	for i := range Fagg {
-		if Fagg[i] == nil {
-			continue
-		}
-		tmp := r.NewPoly()
-		r.InvNTT(Fagg[i], tmp)
-		coeffFagg[i] = tmp
 	}
 	for _, idx := range tail {
 		if _, ok := posByIdx[idx]; !ok {

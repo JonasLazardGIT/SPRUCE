@@ -88,34 +88,21 @@ func RunMaskingFS(in MaskingFSInput) (*Proof, error) {
 		args.smallFieldK = in.SmallFieldK
 		args.smallFieldOmegaS1 = kf.Elem{Limb: append([]uint64(nil), in.SmallFieldOmegaS1...)}
 		args.smallFieldMuInv = kf.Elem{Limb: append([]uint64(nil), in.SmallFieldMuInv...)}
-		// Truncate rows/omega to a consistent head length (use opts.NCols if set).
-		headLen := o.NCols
-		if headLen <= 0 {
-			headLen = len(in.Omega)
+		if len(in.SmallFieldRows) == 0 {
+			return nil, fmt.Errorf("missing small-field rows for theta>1")
 		}
-		// Use the smallest head length across rows and omega.
-		if len(in.SmallFieldRows) > 0 && len(in.SmallFieldRows[0]) < headLen {
-			headLen = len(in.SmallFieldRows[0])
+		headLen := len(in.SmallFieldRows[0])
+		if headLen == 0 {
+			return nil, fmt.Errorf("empty small-field row heads")
 		}
-		if headLen <= 0 {
-			return nil, fmt.Errorf("invalid head length for theta>1")
+		if len(in.Omega) != headLen {
+			return nil, fmt.Errorf("omega length %d != small-field head length %d", len(in.Omega), headLen)
 		}
 		args.rows = make([][]uint64, len(in.SmallFieldRows))
-		for i, row := range in.SmallFieldRows {
-			if len(row) > headLen {
-				row = row[:headLen]
-			} else if len(row) < headLen {
-				tmp := make([]uint64, headLen)
-				copy(tmp, row)
-				row = tmp
-			}
-			args.rows[i] = row
+		for i := range in.SmallFieldRows {
+			args.rows[i] = append([]uint64(nil), in.SmallFieldRows[i]...)
 		}
-		if len(in.Omega) > headLen {
-			args.omega = append([]uint64(nil), in.Omega[:headLen]...)
-		} else {
-			args.omega = in.Omega
-		}
+		args.omega = in.Omega
 	} else {
 		args.rows = evalRowsAt(in.RingQ, in.WitnessPolys, in.Omega)
 	}

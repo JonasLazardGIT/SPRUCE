@@ -8,6 +8,7 @@ type PublicInputs struct {
 	RI0    []*ring.Poly
 	RI1    []*ring.Poly
 	Ac     [][]*ring.Poly
+	A      [][]*ring.Poly
 	B      []*ring.Poly
 	T      []int64
 	Tag    [][]int64

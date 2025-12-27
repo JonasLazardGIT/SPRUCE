@@ -41,6 +41,38 @@ func BuildBoundConstraints(ringQ *ring.Ring, polys []*ring.Poly, bound int64) er
 	return nil
 }
 
+// BuildBoundConstraintsEvalDomain scans the supplied polys in the evaluation
+// domain (NTT) and fails if any value exceeds |bound| after centering into
+// [-q/2, q/2]. This matches eval-domain membership constraints.
+func BuildBoundConstraintsEvalDomain(ringQ *ring.Ring, polys []*ring.Poly, bound int64) error {
+	if ringQ == nil {
+		return fmt.Errorf("nil ring")
+	}
+	if bound <= 0 {
+		return fmt.Errorf("invalid bound %d", bound)
+	}
+	q := int64(ringQ.Modulus[0])
+	half := q / 2
+	for idx, p := range polys {
+		if p == nil {
+			return fmt.Errorf("nil poly at %d", idx)
+		}
+		for _, c := range p.Coeffs[0] {
+			cv := int64(c)
+			if cv > half {
+				cv -= q
+			}
+			if cv < -half {
+				cv += q
+			}
+			if cv > bound || cv < -bound {
+				return fmt.Errorf("bound exceeded at poly %d", idx)
+			}
+		}
+	}
+	return nil
+}
+
 // BuildCommitConstraints builds residual polys for Ac·vec - Com. All inputs
 // must be in the same domain (NTT). Returns one poly per row of Ac.
 func BuildCommitConstraints(ringQ *ring.Ring, Ac [][]*ring.Poly, vec []*ring.Poly, com []*ring.Poly) ([]*ring.Poly, error) {

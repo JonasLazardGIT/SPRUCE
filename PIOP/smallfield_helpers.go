@@ -50,3 +50,73 @@ func deriveSmallFieldParams(ringQ *ring.Ring, omega []uint64, w1 []*ring.Poly, w
 	}
 	return out, nil
 }
+
+// deriveSmallFieldParamsNoRows derives K/chi and omegaS1/muInv without
+// converting witness columns to small-field rows. This is used by credential
+// mode to keep a row-oriented layout while still enabling theta>1 sampling.
+func deriveSmallFieldParamsNoRows(ringQ *ring.Ring, omega []uint64, theta int) (smallFieldParams, error) {
+	var out smallFieldParams
+	if ringQ == nil {
+		return out, fmt.Errorf("nil ring")
+	}
+	if theta <= 1 {
+		return out, fmt.Errorf("theta must be >1")
+	}
+	if len(omega) == 0 {
+		return out, fmt.Errorf("empty omega")
+	}
+	q := ringQ.Modulus[0]
+	chi, chiErr := kf.FindIrreducible(q, theta, nil)
+	if chiErr != nil {
+		return out, fmt.Errorf("FindIrreducible: %w", chiErr)
+	}
+	K, kErr := kf.New(q, theta, chi)
+	if kErr != nil {
+		return out, fmt.Errorf("kfield.New: %w", kErr)
+	}
+	var omegaS1 kf.Elem
+	var muDenomInv kf.Elem
+	const maxAttempts = 1 << 12
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		candidate, randErr := K.RandomElement(nil)
+		if randErr != nil {
+			return out, fmt.Errorf("sample omegaS1: %w", randErr)
+		}
+		conflict := false
+		for _, w := range omega {
+			if elemEqual(K, candidate, K.EmbedF(w%q)) {
+				conflict = true
+				break
+			}
+		}
+		if conflict {
+			continue
+		}
+		denom := K.One()
+		zeroDiff := false
+		for _, w := range omega {
+			diff := K.Sub(candidate, K.EmbedF(w%q))
+			if K.IsZero(diff) {
+				zeroDiff = true
+				break
+			}
+			denom = K.Mul(denom, diff)
+		}
+		if zeroDiff || K.IsZero(denom) {
+			continue
+		}
+		muDenomInv = K.Inv(denom)
+		omegaS1 = candidate
+		break
+	}
+	if len(muDenomInv.Limb) == 0 {
+		return out, fmt.Errorf("failed to sample omegaS1")
+	}
+	out = smallFieldParams{
+		K:       K,
+		Chi:     append([]uint64(nil), chi...),
+		OmegaS1: omegaS1,
+		MuInv:   muDenomInv,
+	}
+	return out, nil
+}

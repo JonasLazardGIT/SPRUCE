@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"vSIS-Signature/PIOP"
@@ -67,17 +68,18 @@ func main() {
 		LenR:   lenR,
 	}
 
-	// Holder secrets (coeff domain) within bounds, sampled fresh.
-	m1 := samplePackedHalf(ringQ, params.BoundB, rng, true)
-	m2 := samplePackedHalf(ringQ, params.BoundB, rng, false)
-	ru0 := sampleBounded(ringQ, params.BoundB, rng)
-	ru1 := sampleBounded(ringQ, params.BoundB, rng)
-	rPoly := sampleBounded(ringQ, params.BoundB, rng)
+	// Holder secrets (coeff domain) sampled by setting bounded evaluation-domain values,
+	// then inverse-NTT back to coeffs (so bound checks in NTT pass).
+	ncols := 8
+	m1 := samplePackedHalfEval(ringQ, params.BoundB, ncols, rng, true)
+	m2 := samplePackedHalfEval(ringQ, params.BoundB, ncols, rng, false)
+	ru0 := sampleBoundedEval(ringQ, params.BoundB, rng)
+	ru1 := sampleBoundedEval(ringQ, params.BoundB, rng)
+	rPoly := sampleBoundedEval(ringQ, params.BoundB, rng)
 
-	// Issuer challenge.
-	// Deterministic issuer challenge: RI*=1 (coeff).
-	ri0 := makePolyConst(ringQ, 1)
-	ri1 := makePolyConst(ringQ, 1)
+	// Issuer challenge (evaluation domain / NTT): RI*=1.
+	ri0 := makePolyConstNTT(ringQ, 1)
+	ri1 := makePolyConstNTT(ringQ, 1)
 	ch := issuance.Challenge{RI0: []*ring.Poly{ri0}, RI1: []*ring.Poly{ri1}}
 
 	// Prepare commit.
@@ -142,6 +144,14 @@ func main() {
 
 // makePolyConst returns a coeff-domain poly with all entries set to v.
 func makePolyConst(r *ring.Ring, v int64) *ring.Poly {
+	pNTT := makePolyConstNTT(r, v)
+	p := r.NewPoly()
+	r.InvNTT(pNTT, p)
+	return p
+}
+
+// makePolyConstNTT returns an NTT-domain poly whose evaluation values are all v.
+func makePolyConstNTT(r *ring.Ring, v int64) *ring.Poly {
 	p := r.NewPoly()
 	q := int64(r.Modulus[0])
 	var coeff uint64
@@ -342,36 +352,91 @@ func saveAcJSON(path string, Ac [][]*ring.Poly) error {
 }
 
 // sampleBounded samples coefficients in [-bound, bound] uniformly.
-func sampleBounded(r *ring.Ring, bound int64, rng *rand.Rand) *ring.Poly {
-	p := r.NewPoly()
+func sampleBoundedEval(r *ring.Ring, bound int64, rng *rand.Rand) *ring.Poly {
+	pNTT := r.NewPoly()
 	q := int64(r.Modulus[0])
 	mod := 2*bound + 1
 	for i := 0; i < r.N; i++ {
 		v := rng.Int63n(mod) - bound
 		if v < 0 {
-			p.Coeffs[0][i] = uint64(v + q)
+			pNTT.Coeffs[0][i] = uint64(v + q)
 		} else {
-			p.Coeffs[0][i] = uint64(v)
+			pNTT.Coeffs[0][i] = uint64(v)
 		}
 	}
+	p := r.NewPoly()
+	r.InvNTT(pNTT, p)
 	return p
 }
 
-// samplePackedHalf zeros the disallowed half (lower or upper) and samples the allowed half in [-bound,bound].
-func samplePackedHalf(r *ring.Ring, bound int64, rng *rand.Rand, keepLower bool) *ring.Poly {
-	p := sampleBounded(r, bound, rng)
-	half := r.N / 2
+// samplePackedHalfEval zeros the disallowed half over the first ncols eval points and
+// samples the allowed half in [-bound,bound] in evaluation domain.
+func samplePackedHalfEval(r *ring.Ring, bound int64, ncols int, rng *rand.Rand, keepLower bool) *ring.Poly {
+	pNTT := r.NewPoly()
+	q := int64(r.Modulus[0])
+	mod := 2*bound + 1
+	for i := 0; i < r.N; i++ {
+		v := rng.Int63n(mod) - bound
+		if v < 0 {
+			pNTT.Coeffs[0][i] = uint64(v + q)
+		} else {
+			pNTT.Coeffs[0][i] = uint64(v)
+		}
+	}
+	if ncols <= 0 || ncols > r.N {
+		ncols = r.N
+	}
+	half := ncols / 2
 	if keepLower {
-		for i := half; i < r.N; i++ {
-			p.Coeffs[0][i] = 0
+		for i := half; i < ncols; i++ {
+			pNTT.Coeffs[0][i] = 0
 		}
 	} else {
 		for i := 0; i < half; i++ {
-			p.Coeffs[0][i] = 0
+			pNTT.Coeffs[0][i] = 0
 		}
 	}
+	p := r.NewPoly()
+	r.InvNTT(pNTT, p)
 	return p
 }
 
 // loadKeyCoeffs is a no-op stub: NTRU key embedding skipped in this demo.
-func loadKeyCoeffs(path string) ([][]int64, error) { return nil, fmt.Errorf("not implemented") }
+func loadKeyCoeffs(path string) ([][]int64, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	lower := strings.ToLower(path)
+	if strings.Contains(lower, "public") {
+		var pk keys.PublicKey
+		if err := json.Unmarshal(data, &pk); err != nil {
+			return nil, err
+		}
+		if len(pk.HCoeffs) == 0 {
+			return nil, fmt.Errorf("public key missing h_coeffs")
+		}
+		return [][]int64{pk.HCoeffs}, nil
+	}
+	var sk keys.PrivateKey
+	if err := json.Unmarshal(data, &sk); err != nil {
+		return nil, err
+	}
+	var out [][]int64
+	if len(sk.F) > 0 {
+		out = append(out, sk.F)
+	}
+	if len(sk.G) > 0 {
+		out = append(out, sk.G)
+	}
+	if len(sk.Fsmall) > 0 {
+		out = append(out, sk.Fsmall)
+	}
+	if len(sk.Gsmall) > 0 {
+		out = append(out, sk.Gsmall)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("private key has no coefficient data")
+	}
+	return out, nil
+}

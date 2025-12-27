@@ -122,9 +122,16 @@ func ApplyChallenge(p *credential.Params, in Inputs, ch Challenge) (*State, erro
 	k1 := r.NewPoly()
 	delta := int64(2*bound + 1)
 
-	sumCarry := func(ru, ri, rOut, kOut *ring.Poly) {
+	sumCarry := func(ru, riNTT, rOut, kOut *ring.Poly) {
+		// Work in evaluation domain: RU(ω)+RI(ω) -> R(ω), K(ω).
+		ruNTT := r.NewPoly()
+		ring.Copy(ru, ruNTT)
+		r.NTT(ruNTT, ruNTT)
+		ri := riNTT
+		r0NTT := r.NewPoly()
+		k0NTT := r.NewPoly()
 		for i := 0; i < r.N; i++ {
-			ruCoeff := int64(ru.Coeffs[0][i])
+			ruCoeff := int64(ruNTT.Coeffs[0][i])
 			if ruCoeff > int64(q/2) {
 				ruCoeff -= int64(q)
 			}
@@ -134,18 +141,20 @@ func ApplyChallenge(p *credential.Params, in Inputs, ch Challenge) (*State, erro
 			}
 			c := credential.CenterBounded(ruCoeff+riCoeff, bound)
 			if c < 0 {
-				rOut.Coeffs[0][i] = uint64(c + q)
+				r0NTT.Coeffs[0][i] = uint64(c + q)
 			} else {
-				rOut.Coeffs[0][i] = uint64(c)
+				r0NTT.Coeffs[0][i] = uint64(c)
 			}
 			diff := ruCoeff + riCoeff - c
 			k := diff / delta
 			if k < 0 {
-				kOut.Coeffs[0][i] = uint64(k + q)
+				k0NTT.Coeffs[0][i] = uint64(k + q)
 			} else {
-				kOut.Coeffs[0][i] = uint64(k)
+				k0NTT.Coeffs[0][i] = uint64(k)
 			}
 		}
+		r.InvNTT(r0NTT, rOut)
+		r.InvNTT(k0NTT, kOut)
 	}
 
 	sumCarry(in.RU0[0], ch.RI0[0], r0, k0)
