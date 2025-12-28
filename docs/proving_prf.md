@@ -15,6 +15,81 @@ for the showing phase, using the SmallWood/PACS machinery already in the repo. I
 
 The NIZK needs to show: given the hidden `m2` (already tied to the signature) and a nonce (public or private), the public `tag` equals `F(m2, nonce)` under the above permutation and feed‑forward.
 
+## 1.5 Protocol walkthrough (showing builder + PRF trace rows)
+This section maps the protocol-level PRF statement to the actual showing implementation:
+
+1) **Load credential state + PRF params**
+   - State: `credential/keys/credential_state.json` is read by `cmd/showing/main.go`.
+   - PRF params: `prf.LoadDefaultParams()` (see `prf/README.md`).
+
+2) **Build base witness rows**
+   - `buildWitnessFromState` in `cmd/showing/main.go` maps `m1/m2/r0/r1/k0/k1/T/U` into `PIOP.WitnessInputs`.
+   - These rows are the same base layout as in issuance, with the addition of internal `T` and signature row(s) `U`.
+
+3) **Compute `tag` and PRF trace**
+   - `m2` is parsed into PRF key lanes.
+   - `nonce` is sampled and made public.
+   - `tag := PRF(m2, nonce)` is computed in native Go via `prf.Tag`.
+   - `trace := prf.Trace(x0)` returns all round boundary states `x^(r)` for `r=0..R`.
+
+4) **Attach trace rows to the witness**
+   - `traceRows := traceToPolys(...)` builds one row per lane per round boundary.
+   - `wit.Extras["prf_trace"] = traceRows` passes the trace to the showing row builder.
+   - `BuildCredentialRowsShowing` appends those trace rows after the base rows and returns `startIdx`, the first PRF row index.
+
+5) **Build constraints for showing**
+   - Post‑sign constraints (signature/hash/packing/bounds) are built over the base rows.
+   - `BuildPRFConstraintSet` uses `startIdx` plus public `tag`/`nonce` and PRF params to enforce the round transitions and feed‑forward.
+   - `BuildShowingCombined` merges these into a single `ConstraintSet` and calls `BuildWithConstraints`.
+
+6) **Verify**
+   - `VerifyWithConstraints` replays FS and evaluates constraints on opened row values.
+   - For PRF, the verifier recomputes round constraints from the opened PRF trace rows plus public parameters.
+
+Cross‑reference:
+- `PIOP/showing_builder.go` (`BuildShowingCombined`)
+- `PIOP/credential_rows_showing.go` (`BuildCredentialRowsShowing`, `startIdx`)
+- `cmd/showing/main.go` (full showing flow)
+
+## 1.6 Row layout diagram (issuance vs showing)
+
+Issuance (pre‑sign) witness rows:
+```
+0: M1
+1: M2
+2: RU0
+3: RU1
+4: R
+5: R0
+6: R1
+7: K0
+8: K1
+```
+
+Showing (post‑sign) witness rows:
+```
+0:  M1
+1:  M2
+2:  RU0
+3:  RU1
+4:  R
+5:  R0
+6:  R1
+7:  K0
+8:  K1
+9:  T     (internal hash output)
+10+: U     (signature preimage rows, 1–2 polys)
+... PRF trace rows, row‑major:
+    x^(0)_0, x^(0)_1, ..., x^(0)_{t-1},
+    x^(1)_0, x^(1)_1, ..., x^(1)_{t-1},
+    ...
+    x^(R)_0, x^(R)_1, ..., x^(R)_{t-1}
+```
+
+Constraints:
+- **Issuance**: commit + center + hash + packing + bounds (all F‑par).
+- **Showing**: signature + hash + packing + bounds + PRF (all F‑par).
+
 ## 2. Witness strategy
 You must carry some permutation trace as witness; composing the whole permutation as a single polynomial is infeasible.
 

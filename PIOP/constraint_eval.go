@@ -2,7 +2,6 @@ package PIOP
 
 import (
 	"fmt"
-	"os"
 
 	decs "vSIS-Signature/DECS"
 	lvcs "vSIS-Signature/LVCS"
@@ -271,70 +270,6 @@ func EvaluateConstraintsOnKPoints(eval KConstraintEvaluator, in EvalKInput) (boo
 				}
 			}
 			if !elemEqual(in.K, lhs, rhs) {
-				if os.Getenv("DEBUG_K_REPLAY") == "1" {
-					fmt.Printf("[k-replay] mismatch kp=%d row=%d lhs=%v rhs=%v\n", kpIdx, i, lhs.Limb, rhs.Limb)
-					fmt.Printf("  rowVals (first 9) = ")
-					for idx := 0; idx < len(rowVals) && idx < 9; idx++ {
-						if idx > 0 {
-							fmt.Printf(",")
-						}
-						fmt.Printf("%v", rowVals[idx].Limb)
-					}
-					fmt.Printf("\n")
-					if in.Ring != nil && len(in.Fpar) > 0 {
-						tmp := in.Ring.NewPoly()
-						mismatchCount := 0
-						for j := 0; j < len(fpar) && j < len(in.Fpar); j++ {
-							if in.Fpar[j] == nil {
-								continue
-							}
-							in.Ring.InvNTT(in.Fpar[j], tmp)
-							exp := in.K.EvalFPolyAtK(tmp.Coeffs[0], e)
-							if !elemEqual(in.K, exp, fpar[j]) {
-								fmt.Printf("  fpar[%d] mismatch exp=%v got=%v\n", j, exp.Limb, fpar[j].Limb)
-								mismatchCount++
-								if mismatchCount >= 5 {
-									fmt.Printf("  ... truncated after %d mismatches\n", mismatchCount)
-									break
-								}
-							}
-						}
-					}
-					if os.Getenv("DEBUG_K_BOUNDS") == "1" && len(in.BoundRows)+len(in.CarryRows) > 0 {
-						boundCount := len(in.BoundRows) + len(in.CarryRows)
-						if boundCount <= len(fpar) {
-							start := len(fpar) - boundCount
-							tmp := in.Ring.NewPoly()
-							for j := 0; j < boundCount; j++ {
-								fparIdx := start + j
-								if fparIdx < 0 || fparIdx >= len(fpar) || fparIdx >= len(in.Fpar) || in.Fpar[fparIdx] == nil {
-									continue
-								}
-								rowIdx := -1
-								bound := in.BoundB
-								if j < len(in.BoundRows) {
-									rowIdx = in.BoundRows[j]
-								} else {
-									rowIdx = in.CarryRows[j-len(in.BoundRows)]
-									if in.CarryBound != 0 {
-										bound = in.CarryBound
-									} else {
-										bound = 1
-									}
-								}
-								if rowIdx < 0 || rowIdx >= len(rowVals) {
-									continue
-								}
-								in.Ring.InvNTT(in.Fpar[fparIdx], tmp)
-								exp := in.K.EvalFPolyAtK(tmp.Coeffs[0], e)
-								got := fpar[fparIdx]
-								pb := boundPolyK(in.K, rowVals[rowIdx], bound)
-								fmt.Printf("  bound[%d] row=%d bound=%d rowVal=%v exp=%v eval=%v pb=%v\n",
-									fparIdx, rowIdx, bound, rowVals[rowIdx].Limb, exp.Limb, got.Limb, pb.Limb)
-							}
-						}
-					}
-				}
 				return false, fmt.Errorf("eq4 K-point mismatch at kp=%d row=%d", kpIdx, i)
 			}
 		}
@@ -431,22 +366,11 @@ func EvaluateConstraintsOnTailOpen(eval ConstraintEvaluator, in EvalTailInput) (
 				}
 			}
 			if lhs != rhs {
-				if os.Getenv("DEBUG_TAIL_REPLAY") == "1" {
-					fmt.Printf("[tail-replay] idx=%d row=%d lhs=%d rhs=%d mask=%d fpar0=%d fagg0=%d\n",
-						idx, i, lhs, rhs, decs.GetOpeningPval(in.MaskOpen, posMask, i)%q, firstVal(fpar), firstVal(fagg))
-				}
 				return false, fmt.Errorf("eq4 tail replay mismatch idx=%d row=%d lhs=%d rhs=%d", idx, i, lhs, rhs)
 			}
 		}
 	}
 	return true, nil
-}
-
-func firstVal(vals []uint64) uint64 {
-	if len(vals) == 0 {
-		return 0
-	}
-	return vals[0]
 }
 
 // CredentialConstraintConfig carries the row indices and public parameters

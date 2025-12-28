@@ -1,9 +1,5 @@
 package decs
 
-import (
-	"fmt"
-)
-
 type openingMetrics struct {
 	entries           int
 	maskPrefixCount   int
@@ -45,44 +41,6 @@ func (m openingMetrics) nonceBytes() int {
 
 func (m openingMetrics) totalBytes() int {
 	return m.indicesBytes() + m.residuesBytes() + m.merkleBytes() + m.nonceBytes()
-}
-
-func logOpeningMetrics(stage string, op *DECSOpening) {
-	if !debugOpeningSizes || op == nil {
-		return
-	}
-	stats := computeOpeningMetrics(op)
-	tailDetail := fmt.Sprintf("%dB", stats.tailIndexBytes)
-	if stats.tailMetaBytes > 0 {
-		tailDetail = fmt.Sprintf("%dB (packed=%dB meta=%dB)", stats.tailIndexBytes, stats.tailPackedBytes, stats.tailMetaBytes)
-	}
-	pathDetail := fmt.Sprintf("%dB", stats.pathBytes)
-	if stats.pathMetaBytes > 0 {
-		pathDetail = fmt.Sprintf("%dB (packed=%dB meta=%dB)", stats.pathBytes, stats.pathPackedBytes, stats.pathMetaBytes)
-	}
-	frontierDetail := fmt.Sprintf("%dB", stats.frontierBytes+stats.frontierMetaByte)
-	if stats.frontierRefPacked > 0 {
-		frontierDetail = fmt.Sprintf("%dB refs=%dB (packed=%dB meta=%dB)", stats.frontierBytes+stats.frontierMetaByte, stats.frontierRefsBytes, stats.frontierRefPacked, stats.frontierRefMeta)
-	}
-	fmt.Printf(
-		"[DECS] opening[%s]: entries=%d mask=%d tail=%d | indices=%dB (prefix=%dB tail=%s) residues=%dB (P=%dB M=%dB) merkle=%dB (nodes=%dB path=%s frontier=%s) nonces=%dB total=%dB\n",
-		stage,
-		stats.entries,
-		stats.maskPrefixCount,
-		stats.tailCount,
-		stats.indicesBytes(),
-		stats.maskPrefixBytes,
-		tailDetail,
-		stats.residuesBytes(),
-		stats.pvalsBytes,
-		stats.mvalsBytes,
-		stats.merkleBytes(),
-		stats.nodeBytes,
-		pathDetail,
-		frontierDetail,
-		stats.nonceBytes(),
-		stats.totalBytes(),
-	)
 }
 
 func computeOpeningMetrics(op *DECSOpening) openingMetrics {
@@ -168,14 +126,12 @@ func matrixByteSize(mat [][]uint64) int {
 }
 
 func varintLen(x int) int {
-	if x < 0 {
-		return 0
-	}
-	v := uint32(x)
-	n := 1
-	for v >= 0x80 {
-		v >>= 7
+	n := 0
+	for {
 		n++
+		if x >>= 7; x == 0 {
+			break
+		}
 	}
 	return n
 }

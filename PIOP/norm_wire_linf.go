@@ -14,11 +14,6 @@ type LinfChainAux struct {
 	SigCount int
 }
 
-const (
-	linfChainWindowBits = 4
-	linfChainDigits     = 5
-)
-
 func minimalChainDigits(beta uint64, W int) (int, error) {
 	if W <= 0 {
 		return 0, fmt.Errorf("invalid chain window bits: %d", W)

@@ -8,57 +8,6 @@ import (
 	"github.com/tuneinsight/lattigo/v4/ring"
 )
 
-// BuildShowingPRF constructs and proves a PRF-only showing statement using the committed
-// witness rows built by BuildCredentialRowsShowing. It assumes theta=1 for now (matching
-// BuildWithRows). Callers must populate all base rows (M1,M2,RU*,R*,K*) and the PRF trace
-// polys in wit.Extras["prf_trace"].
-func BuildShowingPRF(pub PublicInputs, wit WitnessInputs, tagPublic [][]int64, noncePublic [][]int64, opts SimOpts) (*Proof, error) {
-	opts.applyDefaults()
-	// Force theta=1 path for BuildWithRows compatibility.
-	opts.Theta = 1
-	ringQ, _, _, err := loadParamsAndOmega(opts)
-	if err != nil {
-		return nil, fmt.Errorf("load params: %w", err)
-	}
-	params, err := prf.LoadDefaultParams()
-	if err != nil {
-		return nil, fmt.Errorf("load prf params: %w", err)
-	}
-
-	// Build rows/layout with showing builder.
-	rows, rowInputs, rowLayout, decsParams, maskOffset, maskCount, witnessCount, startIdx, ncols, err := BuildCredentialRowsShowing(ringQ, wit, params.LenKey, params.LenNonce, params.RF, params.RP, opts)
-	if err != nil {
-		return nil, fmt.Errorf("build showing rows: %w", err)
-	}
-
-	// Build constraint set over NTT rows (evaluation-domain).
-	rowsNTT := make([]*ring.Poly, len(rows))
-	for i := range rows {
-		rowsNTT[i] = ringQ.NewPoly()
-		ring.Copy(rows[i], rowsNTT[i])
-		ringQ.NTT(rowsNTT[i], rowsNTT[i])
-	}
-	cs, err := BuildPRFConstraintSet(ringQ, params, rowsNTT, startIdx, tagPublic, noncePublic, ncols)
-	if err != nil {
-		return nil, fmt.Errorf("build prf constraint set: %w", err)
-	}
-	cs.PRFLayout = &PRFLayout{
-		StartIdx: startIdx,
-		LenKey:   params.LenKey,
-		LenNonce: params.LenNonce,
-		RF:       params.RF,
-		RP:       params.RP,
-		LenTag:   params.LenTag,
-	}
-
-	// Ensure tag/nonce appear in publics for FS binding.
-	pub.Tag = tagPublic
-	pub.Nonce = noncePublic
-	opts.Credential = true
-
-	return BuildWithRows(pub, cs, opts, rows, rowInputs, rowLayout, decsParams, maskOffset, maskCount, witnessCount, ncols)
-}
-
 // BuildShowingCombined constructs a showing statement with post-sign credential
 // constraints (signature/hash/bounds) and PRF constraints. It expects base rows
 // (M1,M2,RU0,RU1,R,R0,R1,K0,K1), a T row (wit.T), signature rows (wit.U), and

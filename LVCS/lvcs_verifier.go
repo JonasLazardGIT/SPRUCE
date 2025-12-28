@@ -2,16 +2,12 @@ package lvcs
 
 import (
 	"crypto/rand"
-	"fmt"
 	"math/big"
-	"os"
 
 	decs "vSIS-Signature/DECS"
 
 	"github.com/tuneinsight/lattigo/v4/ring"
 )
-
-var debugLVCS = os.Getenv("DEBUG_LVCS") != ""
 
 // VerifierState holds verifier‐side LVCS state.
 type VerifierState struct {
@@ -122,21 +118,12 @@ func (v *VerifierState) EvalStep2(
 	vTargets [][]uint64, // public v_k on Ω
 ) bool {
 	if open == nil {
-		if debugLVCS {
-			fmt.Println("[LVCS] FAIL: nil opening")
-		}
 		return false
 	}
 	if err := decs.EnsureMerkleDecoded(open); err != nil {
-		if debugLVCS {
-			fmt.Printf("[LVCS] FAIL: %v\n", err)
-		}
 		return false
 	}
 	if len(bar) == 0 || len(bar[0]) == 0 {
-		if debugLVCS {
-			fmt.Println("[LVCS] FAIL: empty bar")
-		}
 		return false
 	}
 	m := len(bar)
@@ -146,77 +133,44 @@ func (v *VerifierState) EvalStep2(
 	maskStart := ncols
 	maskEnd := ncols + ell
 	if maskEnd > N {
-		if debugLVCS {
-			fmt.Printf("[LVCS] FAIL: mask range exceeds ring (ncols=%d ell=%d N=%d)\n", ncols, ell, N)
-		}
 		return false
 	}
 	if len(E) != ell {
-		if debugLVCS {
-			fmt.Printf("[LVCS] FAIL: |E|=%d != ell=%d\n", len(E), ell)
-		}
 		return false
 	}
 	tailSeen := make(map[int]struct{}, len(E))
 	for _, idx := range E {
 		if idx < maskEnd || idx >= N {
-			if debugLVCS {
-				fmt.Printf("[LVCS] FAIL: E intersects Ω ∪ Ω′ at idx=%d (ncols=%d ell=%d)\n", idx, ncols, ell)
-			}
 			return false
 		}
 		if _, dup := tailSeen[idx]; dup {
-			if debugLVCS {
-				fmt.Printf("[LVCS] FAIL: duplicate index %d in E\n", idx)
-			}
 			return false
 		}
 		tailSeen[idx] = struct{}{}
 	}
 	if len(C) != m {
-		if debugLVCS {
-			fmt.Println("[LVCS] FAIL: C dimension mismatch vs bar")
-		}
 		return false
 	}
 	if len(vTargets) != m {
-		if debugLVCS {
-			fmt.Println("[LVCS] FAIL: vTargets dimension mismatch vs bar")
-		}
 		return false
 	}
 	for k := 0; k < m; k++ {
 		if len(bar[k]) != ell {
-			if debugLVCS {
-				fmt.Printf("[LVCS] FAIL: bar[%d] has len=%d (want %d)\n", k, len(bar[k]), ell)
-			}
 			return false
 		}
 		if len(C[k]) != v.r {
-			if debugLVCS {
-				fmt.Printf("[LVCS] FAIL: C[%d] has len=%d (want %d)\n", k, len(C[k]), v.r)
-			}
 			return false
 		}
 		if len(vTargets[k]) != ncols {
-			if debugLVCS {
-				fmt.Printf("[LVCS] FAIL: vTargets[%d] has len=%d (want %d)\n", k, len(vTargets[k]), ncols)
-			}
 			return false
 		}
 	}
 
 	if open.EntryCount() != len(E)+ell {
-		if debugLVCS {
-			fmt.Printf("[LVCS] FAIL: |open.Indices|=%d (expected masked+E=%d)\n", open.EntryCount(), len(E)+ell)
-		}
 		return false
 	}
 
 	if err := decs.EnsureMerkleDecoded(open); err != nil {
-		if debugLVCS {
-			fmt.Printf("[LVCS] FAIL: EnsureMerkleDecoded: %v\n", err)
-		}
 		return false
 	}
 	maskOpen := &decs.DECSOpening{
@@ -248,9 +202,6 @@ func (v *VerifierState) EvalStep2(
 		switch {
 		case idx >= maskStart && idx < maskEnd:
 			if _, dup := maskSeen[idx]; dup {
-				if debugLVCS {
-					fmt.Printf("[LVCS] FAIL: duplicate masked index %d in opening\n", idx)
-				}
 				return false
 			}
 			maskSeen[idx] = struct{}{}
@@ -260,9 +211,6 @@ func (v *VerifierState) EvalStep2(
 			maskOpen.PathIndex = append(maskOpen.PathIndex, append([]int(nil), open.PathIndex[i]...))
 		case idx >= maskEnd && idx < N:
 			if _, dup := tailSeenOpen[idx]; dup {
-				if debugLVCS {
-					fmt.Printf("[LVCS] FAIL: duplicate tail index %d in opening\n", idx)
-				}
 				return false
 			}
 			tailSeenOpen[idx] = struct{}{}
@@ -271,9 +219,6 @@ func (v *VerifierState) EvalStep2(
 			tailOpen.Mvals = append(tailOpen.Mvals, open.Mvals[i])
 			tailOpen.PathIndex = append(tailOpen.PathIndex, append([]int(nil), open.PathIndex[i]...))
 		default:
-			if debugLVCS {
-				fmt.Printf("[LVCS] FAIL: opening index %d not in masked or tail region\n", idx)
-			}
 			return false
 		}
 	}
@@ -285,21 +230,12 @@ func (v *VerifierState) EvalStep2(
 	}
 
 	if len(maskOpen.Indices) != ell {
-		if debugLVCS {
-			fmt.Println("[LVCS] FAIL: masked opening missing indices")
-		}
 		return false
 	}
 	if len(tailOpen.Indices) != len(E) {
-		if debugLVCS {
-			fmt.Println("[LVCS] FAIL: tail opening missing indices")
-		}
 		return false
 	}
 	if !equalSets(tailOpen.Indices, E) {
-		if debugLVCS {
-			fmt.Println("[LVCS] FAIL: tail opening indices != E")
-		}
 		return false
 	}
 
@@ -309,15 +245,9 @@ func (v *VerifierState) EvalStep2(
 		maskIdx[i] = ncols + i
 	}
 	if !decv.VerifyEvalAt(v.Root, v.Gamma, v.R, maskOpen, maskIdx) {
-		if debugLVCS {
-			fmt.Println("[LVCS] FAIL: DECS.VerifyEvalAt on masked indices")
-		}
 		return false
 	}
 	if !decv.VerifyEvalAt(v.Root, v.Gamma, v.R, tailOpen, E) {
-		if debugLVCS {
-			fmt.Println("[LVCS] FAIL: DECS.VerifyEvalAt on tail indices")
-		}
 		return false
 	}
 
@@ -326,9 +256,6 @@ func (v *VerifierState) EvalStep2(
 		maskedPos := idx - ncols
 		for k := 0; k < m; k++ {
 			if len(maskOpen.Pvals[t]) != v.r {
-				if debugLVCS {
-					fmt.Printf("[LVCS] FAIL: masked Pvals length mismatch at t=%d (got %d want %d)\n", t, len(maskOpen.Pvals[t]), v.r)
-				}
 				return false
 			}
 			sum := uint64(0)
@@ -336,9 +263,6 @@ func (v *VerifierState) EvalStep2(
 				sum = MulAddMod64(sum, C[k][j], maskOpen.Pvals[t][j], mod)
 			}
 			if sum != bar[k][maskedPos] {
-				if debugLVCS {
-					fmt.Printf("[LVCS] FAIL: masked linear relation mismatch at idx=%d pos=%d k=%d (sum=%d bar=%d)\n", idx, maskedPos, k, sum, bar[k][maskedPos])
-				}
 				return false
 			}
 		}
@@ -348,9 +272,6 @@ func (v *VerifierState) EvalStep2(
 	for k := 0; k < m; k++ {
 		Qk, err := interpolateRow(v.RingQ, vTargets[k], bar[k], ncols, ell)
 		if err != nil {
-			if debugLVCS {
-				fmt.Printf("[LVCS] FAIL: interpolateRow(Q_%d): %v\n", k, err)
-			}
 			return false
 		}
 		Qvals[k] = v.RingQ.NewPoly()
@@ -359,9 +280,6 @@ func (v *VerifierState) EvalStep2(
 
 	for t, idx := range tailOpen.Indices {
 		if len(tailOpen.Pvals[t]) != v.r {
-			if debugLVCS {
-				fmt.Printf("[LVCS] FAIL: tail Pvals length mismatch at t=%d (got %d want %d)\n", t, len(tailOpen.Pvals[t]), v.r)
-			}
 			return false
 		}
 		for k := 0; k < m; k++ {
@@ -371,9 +289,6 @@ func (v *VerifierState) EvalStep2(
 				rhs = MulAddMod64(rhs, C[k][j], tailOpen.Pvals[t][j], mod)
 			}
 			if lhs != rhs {
-				if debugLVCS {
-					fmt.Printf("[LVCS] FAIL: Q-check mismatch at idx=%d k=%d (lhs=%d rhs=%d)\n", idx, k, lhs, rhs)
-				}
 				return false
 			}
 		}

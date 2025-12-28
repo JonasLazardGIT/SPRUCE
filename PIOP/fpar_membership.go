@@ -76,27 +76,3 @@ func buildFparRangeMembershipCompose(
 	}
 	return
 }
-
-// buildFparRangeMembershipEvalDomain builds parallel constraints by applying
-// the membership polynomial directly to evaluation-domain values (NTT form).
-// Each row contributes one Fpar polynomial whose values on Ω are P_B(P(ω)).
-func buildFparRangeMembershipEvalDomain(
-	r *ring.Ring,
-	rows []*ring.Poly,
-	spec RangeMembershipSpec,
-) (Fpar []*ring.Poly) {
-	q := r.Modulus[0]
-	for _, row := range rows {
-		out := r.NewPoly()
-		for i, v := range row.Coeffs[0] {
-			out.Coeffs[0][i] = EvalPoly(spec.Coeffs, v%q, q)
-		}
-		Fpar = append(Fpar, out)
-	}
-	if measure.Enabled && len(Fpar) > 0 {
-		qb := new(big.Int).SetUint64(r.Modulus[0])
-		bytesR := measure.BytesRing(r.N, qb)
-		measure.Global.Add("piop/Fpar/membership_eval", int64(len(Fpar))*int64(bytesR))
-	}
-	return
-}

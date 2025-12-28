@@ -2,14 +2,10 @@ package decs
 
 import (
 	"encoding/binary"
-	"fmt"
 	"math/bits"
-	"os"
 
 	"github.com/tuneinsight/lattigo/v4/ring"
 )
-
-var debugDECS = os.Getenv("DEBUG_DECS") != ""
 
 // Verifier holds DECS verification parameters.
 type Verifier struct {
@@ -80,9 +76,6 @@ func equalGamma(a, b [][]uint64) bool {
 // VerifyCommit checks deg R_k <= Degree (DECS §3 Step 3).
 func (v *Verifier) VerifyCommit(root [16]byte, R []*ring.Poly, Gamma [][]uint64) bool {
 	if !equalGamma(v.DeriveGamma(root), Gamma) {
-		if debugDECS {
-			fmt.Printf("[DECS] FAIL: Gamma not bound to root\n")
-		}
 		return false
 	}
 	for _, p := range R {
@@ -102,41 +95,23 @@ func (v *Verifier) VerifyEval(
 	open *DECSOpening,
 ) bool {
 	if open == nil {
-		if debugDECS {
-			fmt.Println("[DECS] FAIL: nil opening")
-		}
 		return false
 	}
 	if err := EnsureMerkleDecoded(open); err != nil {
-		if debugDECS {
-			fmt.Printf("[DECS] FAIL: %v\n", err)
-		}
 		return false
 	}
 	n := open.EntryCount()
 	if len(open.Pvals) != n || len(open.Mvals) != n || len(open.PathIndex) != n {
-		if debugDECS {
-			fmt.Println("[DECS] FAIL: opening slices have mismatched lengths")
-		}
 		return false
 	}
 	if len(open.Nonces) > 0 && len(open.Nonces) != n {
-		if debugDECS {
-			fmt.Println("[DECS] FAIL: nonce slice length mismatch")
-		}
 		return false
 	}
 	if len(Gamma) != v.params.Eta || len(R) != v.params.Eta {
-		if debugDECS {
-			fmt.Println("[DECS] FAIL: Gamma/R dimension mismatch")
-		}
 		return false
 	}
 	for k := 0; k < v.params.Eta; k++ {
 		if len(Gamma[k]) != v.r {
-			if debugDECS {
-				fmt.Println("[DECS] FAIL: Gamma row length != r")
-			}
 			return false
 		}
 	}
@@ -152,15 +127,9 @@ func (v *Verifier) VerifyEval(
 	for t := 0; t < n; t++ {
 		idx := open.IndexAt(t)
 		if idx < 0 || idx >= int(v.ringQ.N) {
-			if debugDECS {
-				fmt.Printf("[DECS] FAIL: index out of range idx=%d\n", idx)
-			}
 			return false
 		}
 		if len(open.Pvals[t]) != v.r || len(open.Mvals[t]) != v.params.Eta {
-			if debugDECS {
-				fmt.Printf("[DECS] FAIL: inner vector length mismatch at t=%d\n", t)
-			}
 			return false
 		}
 		var nonce []byte
@@ -170,9 +139,6 @@ func (v *Verifier) VerifyEval(
 			nonce = deriveNonce(open.NonceSeed, idx, open.NonceBytes)
 		}
 		if len(nonce) != v.params.NonceBytes {
-			if debugDECS {
-				fmt.Printf("[DECS] FAIL: nonce length mismatch at t=%d\n", t)
-			}
 			return false
 		}
 
@@ -195,25 +161,16 @@ func (v *Verifier) VerifyEval(
 		// Reconstruct per-index path from union
 		ids, ok := pathRowIndices(open, t)
 		if !ok {
-			if debugDECS {
-				fmt.Printf("[DECS] FAIL: path row missing at t=%d\n", t)
-			}
 			return false
 		}
 		path := make([][]byte, len(ids))
 		for lvl, id := range ids {
 			if id < 0 || id >= len(open.Nodes) {
-				if debugDECS {
-					fmt.Printf("[DECS] FAIL: path node index out of range at t=%d lvl=%d\n", t, lvl)
-				}
 				return false
 			}
 			path[lvl] = open.Nodes[id]
 		}
 		if !VerifyPath(buf, path, root, idx) {
-			if debugDECS {
-				fmt.Printf("[DECS] FAIL Merkle at t=%d idx=%d (path mismatch)\n", t, idx)
-			}
 			return false
 		}
 
@@ -225,12 +182,6 @@ func (v *Verifier) VerifyEval(
 				rhs = addMod64(rhs, mul, mod)
 			}
 			if lhs != rhs {
-				if debugDECS {
-					fmt.Printf("[DECS] FAIL masked-relation at t=%d idx=%d k=%d\n", t, idx, k)
-					fmt.Printf("       lhs=NTT(R[%d])[idx]=%d, rhs=Mvals+ΣΓ·P=%d\n", k, lhs, rhs)
-					//fmt.Printf("       Pvals[t]=%v\n", open.Pvals[t])
-					fmt.Printf("       Gamma[k]=%v\n", Gamma[k])
-				}
 				return false
 			}
 		}
@@ -338,40 +289,25 @@ func (v *Verifier) VerifyEvalAt(
 ) bool {
 	indices := open.AllIndices()
 	if len(indices) != len(E) {
-		if debugDECS {
-			fmt.Printf("[DECS] FAIL set-size: |open.Indices|=%d != |E|=%d\n", len(indices), len(E))
-		}
 		return false
 	}
 	seen := make(map[int]struct{}, len(E))
 	for _, x := range E {
 		if x < 0 || x >= int(v.ringQ.N) {
-			if debugDECS {
-				fmt.Printf("[DECS] FAIL: E contains out-of-range index %d\n", x)
-			}
 			return false
 		}
 		if _, dup := seen[x]; dup {
-			if debugDECS {
-				fmt.Printf("[DECS] FAIL: duplicate index %d in E\n", x)
-			}
 			return false
 		}
 		seen[x] = struct{}{}
 	}
 	for _, y := range indices {
 		if _, ok := seen[y]; !ok {
-			if debugDECS {
-				fmt.Printf("[DECS] FAIL set-bind: extra index %d in opening\n", y)
-			}
 			return false
 		}
 		delete(seen, y)
 	}
 	if len(seen) != 0 {
-		if debugDECS {
-			fmt.Printf("[DECS] FAIL set-bind: some challenged indices not opened\n")
-		}
 		return false
 	}
 	return v.VerifyEval(root, Gamma, R, open)

@@ -1027,8 +1027,8 @@ func TestPACS_Integer_Alignment(t *testing.T) {
 func TestPACSTampering(t *testing.T) {
 	t.Run("LVCS/linear-map: tamper bar", func(t *testing.T) {
 		ctx, _, _, _ := buildSim(t)
-		ctx.bar[0][0] = (ctx.bar[0][0] + 1) % ctx.q
-		if ctx.vrf.EvalStep2(ctx.bar, ctx.E, ctx.combinedOpen, ctx.C, ctx.vTargets) {
+		ctx.barSets[0][0] = (ctx.barSets[0][0] + 1) % ctx.q
+		if ctx.vrf.EvalStep2(ctx.barSets, ctx.E, ctx.combinedOpen, ctx.CoeffMatrix, ctx.vTargets) {
 			t.Fatalf("expected LVCS linear-map check to fail")
 		}
 	})
@@ -1037,8 +1037,8 @@ func TestPACSTampering(t *testing.T) {
 		Ehead := append([]int(nil), ctx.E...)
 		Ehead[0] = 0
 		openHeadTail := lvcs.EvalFinish(ctx.pk, Ehead)
-		combinedHead := combineOpenings(ctx.open.DECSOpen, openHeadTail.DECSOpen)
-		if ctx.vrf.EvalStep2(ctx.bar, Ehead, combinedHead, ctx.C, ctx.vTargets) {
+		combinedHead := combineOpenings(ctx.maskOpen.DECSOpen, openHeadTail.DECSOpen)
+		if ctx.vrf.EvalStep2(ctx.barSets, Ehead, combinedHead, ctx.CoeffMatrix, ctx.vTargets) {
 			t.Fatalf("expected EvalStep2 to reject head index")
 		}
 	})
@@ -1047,8 +1047,8 @@ func TestPACSTampering(t *testing.T) {
 		Erand := append([]int(nil), ctx.E...)
 		Erand[0] = ctx.maskIdx[0]
 		openRandTail := lvcs.EvalFinish(ctx.pk, Erand)
-		combinedRand := combineOpenings(ctx.open.DECSOpen, openRandTail.DECSOpen)
-		if ctx.vrf.EvalStep2(ctx.bar, Erand, combinedRand, ctx.C, ctx.vTargets) {
+		combinedRand := combineOpenings(ctx.maskOpen.DECSOpen, openRandTail.DECSOpen)
+		if ctx.vrf.EvalStep2(ctx.barSets, Erand, combinedRand, ctx.CoeffMatrix, ctx.vTargets) {
 			t.Fatalf("expected EvalStep2 to reject randomness-slot index in E")
 		}
 	})
@@ -1068,7 +1068,7 @@ func TestPACSTampering(t *testing.T) {
 		default:
 			bad.MaskBase++
 		}
-		if ctx.vrf.EvalStep2(ctx.bar, ctx.E, bad, ctx.C, ctx.vTargets) {
+		if ctx.vrf.EvalStep2(ctx.barSets, ctx.E, bad, ctx.CoeffMatrix, ctx.vTargets) {
 			t.Fatalf("expected EvalStep2 to reject mismatched E vs open.Indices")
 		}
 	})
@@ -1076,7 +1076,7 @@ func TestPACSTampering(t *testing.T) {
 		ctx, _, _, _ := buildSim(t)
 		bad := deepCopyOpen(ctx.combinedOpen)
 		bad.Pvals[0][0] = (bad.Pvals[0][0] + 1) % ctx.q
-		if ctx.vrf.EvalStep2(ctx.bar, ctx.E, bad, ctx.C, ctx.vTargets) {
+		if ctx.vrf.EvalStep2(ctx.barSets, ctx.E, bad, ctx.CoeffMatrix, ctx.vTargets) {
 			t.Fatalf("expected Merkle/masked check to fail")
 		}
 	})
@@ -1087,22 +1087,22 @@ func TestPACSTampering(t *testing.T) {
 		}
 		bad := deepCopyOpen(ctx.combinedOpen)
 		bad.Nodes[0][0] ^= 0x01
-		if ctx.vrf.EvalStep2(ctx.bar, ctx.E, bad, ctx.C, ctx.vTargets) {
+		if ctx.vrf.EvalStep2(ctx.barSets, ctx.E, bad, ctx.CoeffMatrix, ctx.vTargets) {
 			t.Fatalf("expected Merkle verification to fail")
 		}
 	})
 	t.Run("Eq4: tamper Q", func(t *testing.T) {
 		ctx, _, _, _ := buildSim(t)
 		bumpConst(ctx.ringQ, ctx.Q[0], ctx.q)
-		ok := checkEq4OnOpening(ctx.ringQ, ctx.Q, ctx.M, ctx.open, ctx.Fpar, ctx.Fagg, ctx.GammaPrimePoly, ctx.gammaP, ctx.omega, ctx.Eprime)
+		ok := checkEq4OnOpening(ctx.ringQ, ctx.Q, ctx.M, ctx.maskOpen, ctx.Fpar, ctx.Fagg, ctx.GammaPrimePoly, ctx.GammaPrimeAgg, ctx.omega, ctx.Eprime)
 		if ok {
 			t.Fatalf("expected Eq.(4) check to fail")
 		}
 	})
 	t.Run("Eq4: tamper gammaPrime", func(t *testing.T) {
 		ctx, _, _, _ := buildSim(t)
-		ctx.gammaP[0][0] = (ctx.gammaP[0][0] + 1) % ctx.q
-		ok := checkEq4OnOpening(ctx.ringQ, ctx.Q, ctx.M, ctx.open, ctx.Fpar, ctx.Fagg, ctx.GammaPrimePoly, ctx.gammaP, ctx.omega, ctx.Eprime)
+		ctx.GammaPrimeAgg[0][0] = (ctx.GammaPrimeAgg[0][0] + 1) % ctx.q
+		ok := checkEq4OnOpening(ctx.ringQ, ctx.Q, ctx.M, ctx.maskOpen, ctx.Fpar, ctx.Fagg, ctx.GammaPrimePoly, ctx.GammaPrimeAgg, ctx.omega, ctx.Eprime)
 		if ok {
 			t.Fatalf("expected Eq.(4) check to fail")
 		}
@@ -1156,7 +1156,7 @@ func TestPACSParamGrid(t *testing.T) {
 func TestEq4TamperMaskOnly(t *testing.T) {
 	ctx, _, _, _ := buildSim(t)
 	bumpConst(ctx.ringQ, ctx.M[0], ctx.q)
-	if checkEq4OnOpening(ctx.ringQ, ctx.Q, ctx.M, ctx.open, ctx.Fpar, ctx.Fagg, ctx.GammaPrimePoly, ctx.gammaP, ctx.omega, ctx.Eprime) {
+	if checkEq4OnOpening(ctx.ringQ, ctx.Q, ctx.M, ctx.maskOpen, ctx.Fpar, ctx.Fagg, ctx.GammaPrimePoly, ctx.GammaPrimeAgg, ctx.omega, ctx.Eprime) {
 		t.Fatalf("Eq.(4) should fail when M is tampered")
 	}
 }

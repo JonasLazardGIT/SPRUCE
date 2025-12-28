@@ -292,18 +292,6 @@ func verifyNIZK(proof *Proof, replay *ConstraintReplay) (okLin, okEq4, okSum boo
 	}
 	h4, err := verifyRoundDigest(fs, 3, proof.Ctr[3], transcriptForRound3, proof.Digests[3], proof.Kappa[3])
 	if err != nil {
-		if proof.Theta > 1 {
-			material := append([]byte{}, fs.salt...)
-			for _, m := range transcriptForRound3 {
-				material = append(material, m...)
-			}
-			material = append(material, u64le(proof.Ctr[3])...)
-			exp := fs.xof.Expand(fs.labels[3], material)
-			fmt.Printf("[debug verify] round3 exp digest (len=%d) ctr=%d match=%v\n", len(exp), proof.Ctr[3], bytes.Equal(exp, proof.Digests[3]))
-			if len(exp) >= 8 && len(proof.Digests[3]) >= 8 {
-				fmt.Printf("[debug verify] digests: expected(prefix)=%x proof(prefix)=%x material_len=%d kappa=%d\n", exp[:8], proof.Digests[3][:8], len(material), proof.Kappa[3])
-			}
-		}
 		return false, false, false, fmt.Errorf("VerifyNIZK: FS round 3: %w", err)
 	}
 	seed4 := h4

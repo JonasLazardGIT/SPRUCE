@@ -7,6 +7,8 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"sort"
+	"time"
 
 	"vSIS-Signature/PIOP"
 	"vSIS-Signature/credential"
@@ -32,7 +34,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("load prf params: %v", err)
 	}
-	opts := PIOP.SimOpts{Credential: true, Theta: 2, EllPrime: 1, Rho: 1, NCols: 8, Ell: 1}
+	opts := PIOP.SimOpts{Credential: true, Theta: 4, EllPrime: 2, Rho: 2, NCols: 4, Ell: 24, Eta: 17}
 
 	// Build public matrices.
 	B, err := loadBFromState(ringQ, state)
@@ -42,6 +44,12 @@ func main() {
 	wit, err := buildWitnessFromState(ringQ, state)
 	if err != nil {
 		log.Fatalf("build witness: %v", err)
+	}
+	if err := checkPackedHalfEval(ringQ, wit.M1[0], opts.NCols, true); err != nil {
+		log.Fatalf("state m1 packing mismatch for ncols=%d: %v", opts.NCols, err)
+	}
+	if err := checkPackedHalfEval(ringQ, wit.M2[0], opts.NCols, false); err != nil {
+		log.Fatalf("state m2 packing mismatch for ncols=%d: %v", opts.NCols, err)
 	}
 	A, err := buildSignatureMatrix(ringQ, state, len(wit.U))
 	if err != nil {
@@ -70,6 +78,7 @@ func main() {
 		log.Fatalf("prf trace: %v", err)
 	}
 	traceRows := traceToPolys(ringQ, trace)
+	printWitnessRowBreakdown("[showing-cli] ", wit, len(traceRows), opts.Rho)
 	if wit.Extras == nil {
 		wit.Extras = map[string]interface{}{}
 	}
@@ -84,15 +93,19 @@ func main() {
 	}
 
 	log.Printf("[showing-cli] building proof")
+	proofStart := time.Now()
 	proof, err := PIOP.BuildShowingCombined(pub, wit, opts)
 	if err != nil {
 		log.Fatalf("build showing: %v", err)
 	}
+	proofDur := time.Since(proofStart)
 	ok, err := PIOP.VerifyWithConstraints(proof, PIOP.ConstraintSet{PRFLayout: proof.PRFLayout}, pub, opts, PIOP.FSModeCredential)
 	if err != nil || !ok {
 		log.Fatalf("verify showing failed: ok=%v err=%v", ok, err)
 	}
 	log.Printf("[showing-cli] showing proof verified")
+	printProofReport("[showing-cli] ", proof, opts, ringQ, proofDur)
+	printTranscriptBreakdown("[showing-cli] ", proof)
 }
 
 func loadBFromState(r *ring.Ring, st credential.State) ([]*ring.Poly, error) {
@@ -314,9 +327,125 @@ func buildConstLane(ncols int, v int64) []int64 {
 	return row
 }
 
+func printWitnessRowBreakdown(prefix string, wit PIOP.WitnessInputs, prfRows int, maskRows int) {
+	base := 0
+	if len(wit.M1) > 0 {
+		base++
+	}
+	if len(wit.M2) > 0 {
+		base++
+	}
+	if len(wit.RU0) > 0 {
+		base++
+	}
+	if len(wit.RU1) > 0 {
+		base++
+	}
+	if len(wit.R) > 0 {
+		base++
+	}
+	if len(wit.R0) > 0 {
+		base++
+	}
+	if len(wit.R1) > 0 {
+		base++
+	}
+	if len(wit.K0) > 0 {
+		base++
+	}
+	if len(wit.K1) > 0 {
+		base++
+	}
+	if len(wit.T) > 0 {
+		base++
+	}
+	base += len(wit.U)
+
+	total := base + prfRows
+	if total == 0 {
+		log.Printf("%sno witness rows (base+prf=0)", prefix)
+		return
+	}
+	basePct := 100.0 * float64(base) / float64(total)
+	prfPct := 100.0 * float64(prfRows) / float64(total)
+	log.Printf("%sWitness rows: base=%d (%.1f%%), prf=%d (%.1f%%), total=%d, mask=%d",
+		prefix, base, basePct, prfRows, prfPct, total, maskRows)
+}
+
+func printTranscriptBreakdown(prefix string, proof *PIOP.Proof) {
+	if proof == nil {
+		return
+	}
+	rep := PIOP.MeasureProofSize(proof)
+	if rep.Total == 0 {
+		log.Printf("%sproof size breakdown unavailable (total=0)", prefix)
+		return
+	}
+	keys := make([]string, 0, len(rep.Parts))
+	for k := range rep.Parts {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return rep.Parts[keys[i]] > rep.Parts[keys[j]] })
+	log.Printf("%sTranscript size breakdown (bytes, percent of total=%d):", prefix, rep.Total)
+	for _, k := range keys {
+		v := rep.Parts[k]
+		pct := 100.0 * float64(v) / float64(rep.Total)
+		log.Printf("%s  %-14s %8d  (%5.1f%%)", prefix, k, v, pct)
+	}
+}
+
+func checkPackedHalfEval(r *ring.Ring, poly *ring.Poly, ncols int, keepLower bool) error {
+	if r == nil || poly == nil {
+		return fmt.Errorf("nil ring or poly")
+	}
+	if ncols <= 0 || ncols > r.N {
+		return fmt.Errorf("invalid ncols=%d", ncols)
+	}
+	if ncols%2 != 0 {
+		return fmt.Errorf("ncols=%d must be even for packing", ncols)
+	}
+	pNTT := r.NewPoly()
+	ring.Copy(poly, pNTT)
+	r.NTT(pNTT, pNTT)
+	half := ncols / 2
+	if keepLower {
+		for i := half; i < ncols; i++ {
+			if pNTT.Coeffs[0][i] != 0 {
+				return fmt.Errorf("expected zero in upper half at idx=%d", i)
+			}
+		}
+	} else {
+		for i := 0; i < half; i++ {
+			if pNTT.Coeffs[0][i] != 0 {
+				return fmt.Errorf("expected zero in lower half at idx=%d", i)
+			}
+		}
+	}
+	return nil
+}
+
 func init() {
 	// Ensure we run from repo root for relative paths.
 	if wd, err := os.Getwd(); err == nil {
 		log.Printf("[showing-cli] cwd=%s", wd)
 	}
+}
+
+func printProofReport(prefix string, proof *PIOP.Proof, opts PIOP.SimOpts, ringQ *ring.Ring, dur time.Duration) {
+	rep, err := PIOP.BuildProofReport(proof, opts, ringQ)
+	if err != nil {
+		log.Printf("%sreport: %v", prefix, err)
+		return
+	}
+	fmt.Printf("%sProof size≈%.2f KB (%.0f bytes)\n", prefix, rep.ProofKB, float64(rep.ProofBytes))
+	fmt.Printf("%sProver time≈%s\n", prefix, dur)
+	fmt.Printf("%sSoundness bits: eps1=%.2f eps2=%.2f eps3=%.2f eps4=%.2f total=%.2f\n",
+		prefix,
+		rep.Soundness.Bits[0], rep.Soundness.Bits[1], rep.Soundness.Bits[2], rep.Soundness.Bits[3],
+		rep.Soundness.TotalBits)
+	fmt.Printf("%sParams: NCols=%d ℓ=%d ℓ'=%d ρ=%d θ=%d η=%d dQ=%d\n",
+		prefix, rep.NCols, rep.Ell, rep.EllPrime, rep.Rho, rep.Theta, rep.Eta, rep.DQ)
+	fmt.Printf("%sTable row: %.2f %.3f %.2f %d %d %d %d %d %d\n",
+		prefix, rep.ProofKB, dur.Seconds(), rep.Soundness.TotalBits,
+		rep.NCols, rep.Ell, rep.EllPrime, rep.Rho, rep.Theta, rep.Eta)
 }

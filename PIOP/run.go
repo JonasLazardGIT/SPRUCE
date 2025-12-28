@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
-	"os"
 	"runtime"
 	"sort"
 	"testing"
@@ -183,7 +182,6 @@ type simCtx struct {
 	GammaPrimeAgg     [][]uint64
 	GammaPrimeK       [][]KScalar
 	GammaAggK         [][]KScalar
-	bar               [][]uint64 // legacy alias
 	barSets           [][]uint64
 	EvalReqs          []lvcs.EvalRequest
 	CoeffMatrix       [][]uint64
@@ -194,14 +192,10 @@ type simCtx struct {
 	pk                *lvcs.ProverKey
 	vTargets          [][]uint64
 	maskIdx           []int
-	open              *lvcs.Opening // legacy alias
 	maskOpen          *lvcs.Opening
 	tailOpen          *lvcs.Opening
 	combinedOpen      *decs.DECSOpening
 	proof             *Proof
-	C                 [][]uint64 // legacy alias
-	GammaP            [][]uint64 // legacy alias
-	gammaP            [][]uint64 // legacy alias
 	soundness         SoundnessBudget
 	proofBytes        int
 	dQ                int
@@ -606,31 +600,6 @@ func maxDegreeFromCoeffs(poly []uint64) int {
 		}
 	}
 	return -1
-}
-
-func parallelConstraintDegree(spec *LinfSpec, rm *RangeMembershipSpec) int {
-	d := 2 // product and magnitude constraints
-	if spec != nil {
-		for _, coeffs := range spec.PDi {
-			if coeffs == nil {
-				continue
-			}
-			deg := maxDegreeFromCoeffs(coeffs)
-			if deg > d {
-				d = deg
-			}
-		}
-	}
-	if rm != nil && rm.Coeffs != nil {
-		if deg := maxDegreeFromCoeffs(rm.Coeffs); deg > d {
-			d = deg
-		}
-	}
-	return d
-}
-
-func aggregatedConstraintDegree() int {
-	return 1
 }
 
 func computeDQFromConstraintDegrees(d, dPrime, s, ellPrime int) int {
@@ -1879,10 +1848,6 @@ func RunPACSSimulation() bool {
 	return true
 }
 
-func buildSim(t *testing.T) (*simCtx, bool, bool, bool) {
-	return buildSimWith(t, defaultSimOpts())
-}
-
 func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 	defer prof.Track(time.Now(), "buildSimWith")
 	o.applyDefaults()
@@ -2385,53 +2350,6 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 				return nil, false, false, false
 			}
 		}
-		if t != nil {
-			fsDbg := NewFS(NewShake256XOF(64), proof.Salt, FSParams{Lambda: o.Lambda, Kappa: o.Kappa})
-			rootBytes := root[:]
-			if _, err := verifyRoundDigest(fsDbg, 0, proof.Ctr[0], [][]byte{rootBytes}, proof.Digests[0], proof.Kappa[0]); err != nil {
-				fmt.Printf("[debug fs] round0 mismatch: %v\n", err)
-			}
-			transcript2 := [][]byte{rootBytes, gammaBytes, polysToBytes(Rpolys)}
-			if o.Theta > 1 {
-				transcript2 = append(transcript2, encodeUint64Slice(proof.Chi), encodeUint64Slice(proof.Zeta))
-			}
-			if _, err := verifyRoundDigest(fsDbg, 1, proof.Ctr[1], transcript2, proof.Digests[1], proof.Kappa[1]); err != nil {
-				fmt.Printf("[debug fs] round1 mismatch: %v\n", err)
-			}
-			transcript3 := [][]byte{rootBytes, gammaBytes, gammaPrimeBytes, gammaAggBytes, polysToBytes(Q)}
-			if len(proof.Digests[2]) == 0 {
-				fmt.Printf("[debug fs] round2 digest empty\n")
-			}
-			if _, err := verifyRoundDigest(fsDbg, 2, proof.Ctr[2], transcript3, proof.Digests[2], proof.Kappa[2]); err != nil {
-				fmt.Printf("[debug fs] round2 mismatch: %v (ctr=%d expLen=%d)\n", err, proof.Ctr[2], len(proof.Digests[2]))
-			}
-			transcript4 := [][]byte{
-				rootBytes,
-				gammaBytes,
-				bytesFromKScalarMat(proof.GammaPrimeK),
-				bytesFromKScalarMat(proof.GammaAggK),
-				bytesFromUint64Matrix(proof.KPoint),
-				bytesFromUint64Matrix(proof.CoeffMatrix),
-				bytesFromUint64Matrix(proof.BarSetsMatrix()),
-				bytesFromUint64Matrix(proof.VTargetsMatrix()),
-			}
-			transcript4Prover := [][]byte{
-				rootBytes,
-				gammaBytes,
-				bytesFromKScalarMat(GammaPrimeK),
-				bytesFromKScalarMat(GammaAggK),
-				bytesFromUint64Matrix(kPointLimbs),
-				bytesFromUint64Matrix(coeffMatrix),
-				bytesFromUint64Matrix(barSets),
-				bytesFromUint64Matrix(vTargets),
-			}
-			if !equalByteSlices(flattenBytes(transcript4), flattenBytes(transcript4Prover)) {
-				fmt.Printf("[debug fs] transcript4 differs between prover/verifier view\n")
-			}
-			if _, err := verifyRoundDigest(fsDbg, 3, proof.Ctr[3], transcript4, proof.Digests[3], proof.Kappa[3]); err != nil {
-				fmt.Printf("[debug fs] round3 mismatch: %v (ctr=%d len=%d kappa=%v)\n", err, proof.Ctr[3], len(proof.Digests[3]), proof.Kappa)
-			}
-		}
 	} else {
 		// Original Theta==1 path unchanged
 		round1 := fsRound(fs, proof, 0, "Gamma", root[:])
@@ -2700,8 +2618,6 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 		FparAtE:           copyMatrix(FparAtE),
 		FaggAtE:           copyMatrix(FaggAtE),
 		QAtE:              copyMatrix(QAtE),
-		GammaP:            GammaPrime,
-		gammaP:            GammaAgg,
 		barSets:           barSets,
 		EvalReqs:          evalReqs,
 		CoeffMatrix:       coeffMatrix,
@@ -2716,9 +2632,6 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 		tailOpen:          openTailSaved,
 		combinedOpen:      combinedOpenSaved,
 		proof:             proof,
-		bar:               barSets,
-		C:                 coeffMatrix,
-		open:              openMask,
 		proofBytes:        proofSize,
 		dQ:                dQ,
 		maskDegreeMax:     maskDegreeMax,
@@ -2773,9 +2686,6 @@ func buildSimWith(t *testing.T, o SimOpts) (*simCtx, bool, bool, bool) {
 		okFirstLimbOmega = checkFirstLimbConsistencyOmega(ringQ, smallFieldK, omega, Q, QK)
 	}
 	okEq4 := okEq4Omega && okEq4K && okEq4Tail && okFirstLimbOmega
-	if t != nil && o.Theta > 1 && !okEq4 {
-		fmt.Printf("[debug theta>1] okEq4Omega=%v okEq4K=%v okEq4Tail=%v okFirstLimbOmega=%v\n", okEq4Omega, okEq4K, okEq4Tail, okFirstLimbOmega)
-	}
 	var okSum bool
 	okSum = VerifyQ(ringQ, Q, omega)
 	leafCount := o.NLeaves
@@ -3130,32 +3040,6 @@ func evalPolySetAtIndices(r *ring.Ring, polys []*ring.Poly, indices []int) [][]u
 	return out
 }
 
-// evalPolySetAtIndicesCoeff returns coefficient-domain values at the given
-// indices. It InvNTTs each poly before sampling indices.
-func evalPolySetAtIndicesCoeff(r *ring.Ring, polys []*ring.Poly, indices []int) [][]uint64 {
-	if len(polys) == 0 || len(indices) == 0 {
-		return nil
-	}
-	N := int(r.N)
-	q := r.Modulus[0]
-	out := make([][]uint64, len(polys))
-	tmp := r.NewPoly()
-	for i := range polys {
-		row := make([]uint64, len(indices))
-		r.InvNTT(polys[i], tmp)
-		coeffs := tmp.Coeffs[0]
-		for j, idx := range indices {
-			pos := idx % N
-			if pos < 0 {
-				pos += N
-			}
-			row[j] = coeffs[pos] % q
-		}
-		out[i] = row
-	}
-	return out
-}
-
 func flattenBytes(parts [][]byte) []byte {
 	var out []byte
 	for _, p := range parts {
@@ -3332,23 +3216,19 @@ func VerifyQK_QK(r *ring.Ring, K *kf.Field, omega []uint64, QK []*KPoly) bool {
 	if K == nil {
 		return false
 	}
-	debug := os.Getenv("DEBUG_QK") != ""
-	for idx, QKi := range QK {
+	for _, QKi := range QK {
 		if QKi == nil {
 			return false
 		}
 		sum := K.Zero()
-		for j, w := range omega {
+		for _, w := range omega {
 			eval := evalKPolyAtF(K, QKi, w)
 			sum = K.Add(sum, eval)
-			if debug && !K.IsZero(eval) {
-				fmt.Fprintf(os.Stderr, "VerifyQK_QK: QK[%d] omega[%d]=%d eval!=0\n", idx, j, w)
+			if !K.IsZero(eval) {
+				return false
 			}
 		}
 		if !K.IsZero(sum) {
-			if debug {
-				fmt.Fprintf(os.Stderr, "VerifyQK_QK: QK[%d] sum!=0\n", idx)
-			}
 			return false
 		}
 	}
@@ -3465,13 +3345,10 @@ func checkEq4OnTailOpen(
 		posByIdx[idx] = pos
 	}
 	if len(posByIdx) == 0 && theta > 1 {
-		fmt.Printf("[debug tail] empty opening entries (tail len=%d)\n", len(tail))
+		return false
 	}
 	for _, idx := range tail {
 		if _, ok := posByIdx[idx]; !ok {
-			if theta > 1 {
-				fmt.Printf("[debug tail] missing idx %d in opening (entries=%d) tail=%v openIdx=%v\n", idx, len(posByIdx), tail, maskOpen.AllIndices())
-			}
 			return false
 		}
 	}
@@ -3509,7 +3386,6 @@ func checkEq4OnTailOpen(
 					rhs = modAdd(rhs, modMul(g, fval, q), q)
 				}
 				if lhs != rhs {
-					fmt.Printf("[debug tail] eq4 tail mismatch first limb i=%d idx=%d lhs=%d rhs=%d\n", i, idx, lhs, rhs)
 					return false
 				}
 			} else {

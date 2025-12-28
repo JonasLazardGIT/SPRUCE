@@ -302,14 +302,11 @@ func VerifyQ(
 		log.Fatalf("VerifyQ: |Ω| (= %d) must be < q (= %d) for S0 invertibility", len(omega), q)
 	}
 
-	for i, Qi := range Q {
+	for _, Qi := range Q {
 		ringQ.InvNTT(Qi, coeff)
 		sum := uint64(0)
 		for _, w := range omega {
 			sum = modAdd(sum, EvalPoly(coeff.Coeffs[0], w, q), q)
-		}
-		if DEBUG_SUMS {
-			fmt.Printf("[Q %d] ΣΩ Q_i = %d\n", i, sum)
 		}
 		if sum != 0 {
 			return false

@@ -14,8 +14,8 @@ import (
 )
 
 // MaskingFSInput bundles the data needed to run the masking/Merkle/FS phase
-// independently of the PACS-specific witness construction. This is a scaffold
-// toward a generic builder; currently unused by the PACS path.
+// independently of the PACS-specific witness construction. It is used by the
+// credential builders and by the generic replay path.
 type MaskingFSInput struct {
 	RingQ            *ring.Ring
 	Opts             SimOpts

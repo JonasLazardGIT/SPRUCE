@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -27,6 +28,7 @@ func main() {
 		log.Fatalf("load ring: %v", err)
 	}
 	bound := int64(8)
+	opts := PIOP.SimOpts{Credential: true, Theta: 4, EllPrime: 2, Rho: 2, NCols: 4, Ell: 24, Eta: 17}
 
 	// Sample a fresh random Ac of correct dimensions (lenM1.. = 1 each for demo) and save it.
 	lenM1, lenM2, lenRU0, lenRU1, lenR := 1, 1, 1, 1, 1
@@ -70,7 +72,7 @@ func main() {
 
 	// Holder secrets (coeff domain) sampled by setting bounded evaluation-domain values,
 	// then inverse-NTT back to coeffs (so bound checks in NTT pass).
-	ncols := 8
+	ncols := opts.NCols
 	m1 := samplePackedHalfEval(ringQ, params.BoundB, ncols, rng, true)
 	m2 := samplePackedHalfEval(ringQ, params.BoundB, ncols, rng, false)
 	ru0 := sampleBoundedEval(ringQ, params.BoundB, rng)
@@ -104,16 +106,20 @@ func main() {
 	log.Printf("[issuance-cli] T[0]=%d", state.T[0])
 
 	// Build and verify pre-sign proof.
-	opts := PIOP.SimOpts{Credential: true, Theta: 2, EllPrime: 1, Rho: 1, NCols: 8, Ell: 1}
+	proofStart := time.Now()
 	proof, err := issuance.ProvePreSign(params, ch, com, inputs, state, opts)
 	if err != nil {
 		log.Fatalf("prove pre-sign: %v", err)
 	}
+	proofDur := time.Since(proofStart)
 	ok, err := issuance.VerifyPreSign(params, ch, com, state, proof, opts)
 	if err != nil || !ok {
 		log.Fatalf("verify pre-sign failed: ok=%v err=%v", ok, err)
 	}
 	log.Printf("[issuance-cli] pre-sign proof verified; Fpar=%d", len(proof.FparNTT))
+	printWitnessRowBreakdown("[issuance-cli] ", inputs, state, opts.Rho)
+	printProofReport("[issuance-cli] ", proof, opts, ringQ, proofDur)
+	printTranscriptBreakdown("[issuance-cli] ", proof)
 
 	// Sign T using stored trapdoor keys; save signature.
 	sig, err := issuance.SignTargetAndSave(state.T, 2048, ntru.SamplerOpts{})
@@ -143,13 +149,6 @@ func main() {
 }
 
 // makePolyConst returns a coeff-domain poly with all entries set to v.
-func makePolyConst(r *ring.Ring, v int64) *ring.Poly {
-	pNTT := makePolyConstNTT(r, v)
-	p := r.NewPoly()
-	r.InvNTT(pNTT, p)
-	return p
-}
-
 // makePolyConstNTT returns an NTT-domain poly whose evaluation values are all v.
 func makePolyConstNTT(r *ring.Ring, v int64) *ring.Poly {
 	p := r.NewPoly()
@@ -162,22 +161,6 @@ func makePolyConstNTT(r *ring.Ring, v int64) *ring.Poly {
 	}
 	for i := 0; i < r.N; i++ {
 		p.Coeffs[0][i] = coeff
-	}
-	return p
-}
-
-// makePackedHalfConst zeros the forbidden half to respect packing, fills allowed half with v.
-func makePackedHalfConst(r *ring.Ring, v int64, keepLower bool) *ring.Poly {
-	p := makePolyConst(r, v)
-	half := r.N / 2
-	if keepLower {
-		for i := half; i < r.N; i++ {
-			p.Coeffs[0][i] = 0
-		}
-	} else {
-		for i := 0; i < half; i++ {
-			p.Coeffs[0][i] = 0
-		}
 	}
 	return p
 }
@@ -204,6 +187,86 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return os.WriteFile(dst, data, 0o644)
+}
+
+func printProofReport(prefix string, proof *PIOP.Proof, opts PIOP.SimOpts, ringQ *ring.Ring, dur time.Duration) {
+	rep, err := PIOP.BuildProofReport(proof, opts, ringQ)
+	if err != nil {
+		log.Printf("%sreport: %v", prefix, err)
+		return
+	}
+	fmt.Printf("%sProof size≈%.2f KB (%.0f bytes)\n", prefix, rep.ProofKB, float64(rep.ProofBytes))
+	fmt.Printf("%sProver time≈%s\n", prefix, dur)
+	fmt.Printf("%sSoundness bits: eps1=%.2f eps2=%.2f eps3=%.2f eps4=%.2f total=%.2f\n",
+		prefix,
+		rep.Soundness.Bits[0], rep.Soundness.Bits[1], rep.Soundness.Bits[2], rep.Soundness.Bits[3],
+		rep.Soundness.TotalBits)
+	fmt.Printf("%sParams: NCols=%d ℓ=%d ℓ'=%d ρ=%d θ=%d η=%d dQ=%d\n",
+		prefix, rep.NCols, rep.Ell, rep.EllPrime, rep.Rho, rep.Theta, rep.Eta, rep.DQ)
+	fmt.Printf("%sTable row: %.2f %.3f %.2f %d %d %d %d %d %d\n",
+		prefix, rep.ProofKB, dur.Seconds(), rep.Soundness.TotalBits,
+		rep.NCols, rep.Ell, rep.EllPrime, rep.Rho, rep.Theta, rep.Eta)
+}
+
+func printWitnessRowBreakdown(prefix string, in issuance.Inputs, st *issuance.State, maskRows int) {
+	base := 0
+	if len(in.M1) > 0 {
+		base++
+	}
+	if len(in.M2) > 0 {
+		base++
+	}
+	if len(in.RU0) > 0 {
+		base++
+	}
+	if len(in.RU1) > 0 {
+		base++
+	}
+	if len(in.R) > 0 {
+		base++
+	}
+	if st != nil {
+		if len(st.R0) > 0 {
+			base++
+		}
+		if len(st.R1) > 0 {
+			base++
+		}
+		if len(st.K0) > 0 {
+			base++
+		}
+		if len(st.K1) > 0 {
+			base++
+		}
+	}
+	if base == 0 {
+		log.Printf("%sno witness rows (base=0)", prefix)
+		return
+	}
+	log.Printf("%sWitness rows: base=%d (100.0%%), prf=0 (0.0%%), total=%d, mask=%d",
+		prefix, base, base, maskRows)
+}
+
+func printTranscriptBreakdown(prefix string, proof *PIOP.Proof) {
+	if proof == nil {
+		return
+	}
+	rep := PIOP.MeasureProofSize(proof)
+	if rep.Total == 0 {
+		log.Printf("%sproof size breakdown unavailable (total=0)", prefix)
+		return
+	}
+	keys := make([]string, 0, len(rep.Parts))
+	for k := range rep.Parts {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return rep.Parts[keys[i]] > rep.Parts[keys[j]] })
+	log.Printf("%sTranscript size breakdown (bytes, percent of total=%d):", prefix, rep.Total)
+	for _, k := range keys {
+		v := rep.Parts[k]
+		pct := 100.0 * float64(v) / float64(rep.Total)
+		log.Printf("%s  %-14s %8d  (%5.1f%%)", prefix, k, v, pct)
+	}
 }
 
 // saveCredentialState serializes holder secrets, public challenge, and signature to JSON.

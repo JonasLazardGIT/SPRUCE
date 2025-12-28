@@ -1,7 +1,6 @@
 package PIOP
 
 import (
-	"bytes"
 	cryptoRand "crypto/rand"
 	"encoding/binary"
 	"fmt"
@@ -347,7 +346,6 @@ func runMaskFS(args maskFSArgs) (maskFSOutput, error) {
 				}
 				lhs := args.smallFieldK.Phi(lhsLimbs)
 				if !elemEqual(args.smallFieldK, lhs, rhs) {
-					fmt.Printf("[debug runMaskFS] QK mismatch i=%d idx=%d lhs=%v rhs=%v\n", i, idx, lhs, rhs)
 					checkMismatch = true
 					break
 				}
@@ -513,16 +511,6 @@ func runMaskFS(args maskFSArgs) (maskFSOutput, error) {
 	proof.TailTranscript = flattenBytes(transcript4)
 	round4 := fsRound(fs, proof, 3, "TailPoints", transcript4...)
 	tailRNG := round4.RNG
-	input := make([]byte, len(proof.Salt))
-	copy(input, proof.Salt)
-	for _, m := range transcript4 {
-		input = append(input, m...)
-	}
-	input = append(input, u64le(proof.Ctr[3])...)
-	expected := fs.xof.Expand(fs.labels[3], input)
-	if !bytes.Equal(expected, proof.Digests[3]) {
-		fmt.Printf("[debug fs internal] round3 digest mismatch len(transcript4)=%d ctr=%d\n", len(transcript4), proof.Ctr[3])
-	}
 	E := sampleDistinctIndices(tailStart, tailLen, args.ell, tailRNG)
 	proof.Tail = append([]int(nil), E...)
 

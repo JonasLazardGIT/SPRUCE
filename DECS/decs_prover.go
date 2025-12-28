@@ -4,15 +4,12 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
-	"os"
 
 	"github.com/tuneinsight/lattigo/v4/ring"
 	"github.com/tuneinsight/lattigo/v4/utils"
 )
 
 const nonceDeriveLabel = "decs-nonce"
-
-var debugOpeningSizes = os.Getenv("DEBUG_DECS_OPENINGS") != ""
 
 func deriveNonce(seed []byte, idx int, nonceBytes int) []byte {
 	h := sha256.New()
@@ -236,7 +233,6 @@ func PackOpening(op *DECSOpening) {
 	if len(op.NonceSeed) > 0 {
 		op.Nonces = nil
 	}
-	logOpeningMetrics("pack", op)
 }
 
 // packResidues20 packs Pvals and Mvals into 20-bit streams (row-major: t then j/k).
